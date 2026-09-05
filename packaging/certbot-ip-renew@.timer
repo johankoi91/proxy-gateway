@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the Let's Encrypt IP certificate for %i
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:17:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=certbot-ip-renew@%i.service
+
+[Install]
+WantedBy=timers.target

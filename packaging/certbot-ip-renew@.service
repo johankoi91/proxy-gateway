@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the Let's Encrypt certificate for IP address %i
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot-ip/bin/certbot renew --cert-name %i --no-random-sleep-on-renew

@@ -1,0 +1,8 @@
+.DS_Store
+.env
+data/
+dist/
+web/node_modules/
+internal/httpapi/static/assets/
+internal/httpapi/static/favicon.ico
+vpn-gateway

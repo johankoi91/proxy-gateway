@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lightnode.vless-killswitch-rollback</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/libexec/lightnode-guard</string>
+    <string>firewall</string>
+    <string>rollback</string>
+    <string>{{ROLLBACK_TOKEN}}</string>
+    <string>{{ROLLBACK_SECONDS}}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/LightNodeGuard/pf-rollback.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/LightNodeGuard/pf-rollback.error.log</string>
+</dict>
+</plist>

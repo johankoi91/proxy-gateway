@@ -1,0 +1,29 @@
+services:
+  gateway:
+    image: lightnode-vpn-gateway:1.0.0
+    container_name: vpn-gateway
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_MODULE
+    volumes:
+      - ./data:/data
+      - ./tls:/tls:ro
+      - /lib/modules:/lib/modules:ro
+    env_file:
+      - .env
+    environment:
+      LISTEN_ADDR: ${LISTEN_ADDR:-127.0.0.1:9080}
+      TLS_CERT_FILE: ${TLS_CERT_FILE:-}
+      TLS_KEY_FILE: ${TLS_KEY_FILE:-}
+      STATE_PATH: /data/state.json
+      RUNTIME_DIR: /run/vpn-gateway
+      WG_PORT: "443"
+      VLESS_PORT: "443"
+      VLESS_LISTEN_PORT: ${VLESS_LISTEN_PORT:-8443}
+      ADMIN_SERVER_NAME: ${ADMIN_SERVER_NAME:-}
+      DEFAULT_CLIENTS: mac,iphone,android
+      REALITY_TARGET: www.cloudflare.com:443
+      REALITY_SERVER_NAME: www.cloudflare.com

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "mode": "enforce",
+  "profile": "global_japan",
+  "aiProcessNames": [
+    "Claude",
+    "Claude Helper",
+    "ChatGPT",
+    "ChatGPT Helper"
+  ],
+  "aiProcessPathPrefixes": [
+    "/Applications/Claude.app/",
+    "/Applications/ChatGPT.app/",
+    "/Users/*/Applications/Claude.app/",
+    "/Users/*/Applications/ChatGPT.app/"
+  ],
+  "aiDomainSuffixes": [
+    "claude.ai",
+    "claude.com",
+    "anthropic.com",
+    "chatgpt.com",
+    "openai.com",
+    "oaistatic.com",
+    "oaiusercontent.com",
+    "api.ipify.org",
+    "api64.ipify.org",
+    "one.one.one.one"
+  ]
+}

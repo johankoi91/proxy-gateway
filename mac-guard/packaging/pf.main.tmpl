@@ -1,0 +1,10 @@
+# BEGIN LIGHTNODE VLESS KILL SWITCH
+pass out quick on lo0 all no state
+pass out quick on {{TUN_IF}} inet all no state
+pass in quick on {{PHYSICAL_IF}} inet from {{MANAGEMENT_CIDR}} to any keep state
+pass out quick on {{PHYSICAL_IF}} inet from any to {{MANAGEMENT_CIDR}} keep state
+pass out quick on {{PHYSICAL_IF}} inet proto tcp to {{VPS_IP}} port {{VPS_PORT}} keep state
+pass out quick on {{PHYSICAL_IF}} inet proto udp from port 68 to port 67 keep state
+anchor "com.lightnode.vless-killswitch"
+load anchor "com.lightnode.vless-killswitch" from "/etc/pf.anchors/com.lightnode.vless-killswitch"
+# END LIGHTNODE VLESS KILL SWITCH

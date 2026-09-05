@@ -1,0 +1,668 @@
+package guard
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"lightnode-mac-guard/internal/config"
+	"lightnode-mac-guard/internal/model"
+	"lightnode-mac-guard/internal/policy"
+)
+
+type Controller struct {
+	cfg                 config.Config
+	runner              Runner
+	checker             *checker
+	version             string
+	mu                  sync.RWMutex
+	checkMu             sync.Mutex
+	snapshot            model.Snapshot
+	events              []model.Event
+	eventID             atomic.Int64
+	lastPFRepair        atomic.Int64
+	lastDNSRepair       atomic.Int64
+	lastConflictRepair  atomic.Int64
+	lastConflictTrigger atomic.Int64
+	startedAt           time.Time
+	policyEngine        *policy.Engine
+	policyInitError     string
+}
+
+func NewController(cfg config.Config, runner Runner, version string) *Controller {
+	now := time.Now().UTC()
+	controller := &Controller{
+		cfg:       cfg,
+		runner:    runner,
+		checker:   newChecker(cfg, runner),
+		version:   version,
+		startedAt: now,
+		snapshot: model.Snapshot{
+			Version: version, State: model.StateBootLocked, StateSince: now,
+			Provider: cfg.ProviderName, ExpectedEgress: cfg.ExpectedEgressIP,
+		},
+	}
+	controller.loadEvents()
+	if cfg.V2Enabled {
+		engine, err := policy.New(policy.Options{
+			PolicyFile:  cfg.V2PolicyFile,
+			ClashAPIURL: cfg.V2ClashAPIURL, ClashAPISecret: cfg.V2ClashAPISecret,
+			PollInterval: time.Duration(cfg.V2PollIntervalSeconds) * time.Second,
+			OnViolation:  controller.policyViolationObserved,
+		})
+		if err != nil {
+			controller.policyInitError = err.Error()
+			log.Printf("[error] policy_v2: %v", err)
+		} else {
+			controller.policyEngine = engine
+		}
+	}
+	return controller
+}
+
+func (c *Controller) Start(ctx context.Context) {
+	go func() {
+		c.CheckNow(ctx)
+		ticker := time.NewTicker(c.cfg.CheckInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.CheckNow(ctx)
+			}
+		}
+	}()
+	if c.cfg.ConflictAutoRemediate {
+		go c.watchNetworkConflicts(ctx)
+	}
+	if c.policyEngine != nil {
+		c.policyEngine.Start(ctx)
+	}
+}
+
+func (c *Controller) watchNetworkConflicts(ctx context.Context) {
+	interval := time.Duration(c.cfg.ConflictCheckIntervalSeconds) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probeCtx, cancel := context.WithTimeout(ctx, c.cfg.CheckTimeout())
+			component := c.checker.checkNetworkConflict(probeCtx, time.Now().UTC())
+			cancel()
+			if component.Health == model.HealthHealthy {
+				continue
+			}
+			now := time.Now().Unix()
+			previous := c.lastConflictTrigger.Load()
+			if now-previous >= 10 && c.lastConflictTrigger.CompareAndSwap(previous, now) {
+				go c.CheckNow(ctx)
+			}
+		}
+	}
+}
+
+func (c *Controller) CheckNow(parent context.Context) model.Snapshot {
+	c.checkMu.Lock()
+	defer c.checkMu.Unlock()
+	c.setChecking(true)
+	ctx, cancel := context.WithTimeout(parent, c.cfg.CheckTimeout()*6)
+	defer cancel()
+	output := c.checker.run(ctx)
+	c.apply(output)
+	if c.safelyPaused() {
+		c.setChecking(false)
+		return c.Snapshot()
+	}
+	if componentIsUnhealthy(output, "network_conflict") {
+		c.maybeRepairNetworkConflict(output)
+	} else {
+		c.maybeRepairFirewall(output)
+		c.maybeRepairDNS(output)
+	}
+	c.setChecking(false)
+	return c.Snapshot()
+}
+
+func (c *Controller) safelyPaused() bool {
+	if c.cfg.MaintenanceFile == "" {
+		return false
+	}
+	_, err := os.Stat(c.cfg.MaintenanceFile)
+	return err == nil
+}
+
+func componentIsUnhealthy(output checkOutput, id string) bool {
+	for _, component := range output.components {
+		if component.ID == id {
+			return component.Health != model.HealthHealthy
+		}
+	}
+	return true
+}
+
+func (c *Controller) maybeRepairNetworkConflict(output checkOutput) {
+	if !c.cfg.ConflictAutoRemediate || len(c.cfg.ConflictRemediationCommand) == 0 || c.cfg.FirewallCommittedFile == "" {
+		return
+	}
+	if _, err := os.Stat(c.cfg.FirewallCommittedFile); err != nil || !componentIsUnhealthy(output, "network_conflict") {
+		return
+	}
+	now := time.Now().Unix()
+	previous := c.lastConflictRepair.Load()
+	if now-previous < 30 || !c.lastConflictRepair.CompareAndSwap(previous, now) {
+		return
+	}
+	command := append([]string(nil), c.cfg.ConflictRemediationCommand...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := c.runner.Run(ctx, command[0], command[1:]...)
+		c.mu.Lock()
+		if err != nil {
+			c.addEventLocked("critical", "network_conflict", "代理/VPN 自动隔离失败: "+err.Error())
+		} else {
+			c.addEventLocked("warning", "network_conflict", "已关闭已知冲突通道并恢复 LightNode 网络边界")
+		}
+		c.mu.Unlock()
+		if err == nil {
+			time.Sleep(2 * time.Second)
+			c.CheckNow(context.Background())
+		}
+	}()
+}
+
+func (c *Controller) maybeRepairDNS(output checkOutput) {
+	if len(c.cfg.DNSRepairCommand) == 0 || c.cfg.FirewallCommittedFile == "" {
+		return
+	}
+	if _, err := os.Stat(c.cfg.FirewallCommittedFile); err != nil {
+		return
+	}
+	health := make(map[string]model.Health, len(output.components))
+	for _, component := range output.components {
+		health[component.ID] = component.Health
+	}
+	if health["provider"] != model.HealthHealthy || health["tunnel"] != model.HealthHealthy || health["dns"] == model.HealthHealthy {
+		return
+	}
+	now := time.Now().Unix()
+	previous := c.lastDNSRepair.Load()
+	if now-previous < 30 || !c.lastDNSRepair.CompareAndSwap(previous, now) {
+		return
+	}
+	command := append([]string(nil), c.cfg.DNSRepairCommand...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, err := c.runner.Run(ctx, command[0], command[1:]...)
+		c.mu.Lock()
+		if err != nil {
+			c.addEventLocked("warning", "dns", "DNS 自动修复失败: "+err.Error())
+		} else {
+			c.addEventLocked("warning", "dns", "已为当前网络服务重新设置隧道 DNS")
+		}
+		c.mu.Unlock()
+		if err == nil {
+			time.Sleep(time.Second)
+			c.CheckNow(context.Background())
+		}
+	}()
+}
+
+func (c *Controller) maybeRepairFirewall(output checkOutput) {
+	if len(c.cfg.FirewallRepairCommand) == 0 || c.cfg.FirewallCommittedFile == "" {
+		return
+	}
+	if _, err := os.Stat(c.cfg.FirewallCommittedFile); err != nil {
+		return
+	}
+	failed := false
+	for _, component := range output.components {
+		if strings.HasPrefix(component.ID, "firewall") && component.Health != model.HealthHealthy {
+			failed = true
+			break
+		}
+	}
+	if !failed {
+		return
+	}
+	now := time.Now().Unix()
+	previous := c.lastPFRepair.Load()
+	if now-previous < 30 || !c.lastPFRepair.CompareAndSwap(previous, now) {
+		return
+	}
+	command := append([]string(nil), c.cfg.FirewallRepairCommand...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.runner.Run(ctx, command[0], command[1:]...)
+		c.mu.Lock()
+		if err != nil {
+			c.addEventLocked("critical", "firewall", "PF 自动修复失败: "+err.Error())
+		} else {
+			c.addEventLocked("warning", "firewall", "PF 异常后已重新加载受控 Anchor")
+		}
+		c.mu.Unlock()
+		if err == nil {
+			time.Sleep(time.Second)
+			c.CheckNow(context.Background())
+		}
+	}()
+}
+
+func (c *Controller) Snapshot() model.Snapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	b, _ := json.Marshal(c.snapshot)
+	var out model.Snapshot
+	_ = json.Unmarshal(b, &out)
+	if c.policyEngine != nil {
+		policySnapshot := c.policyEngine.Snapshot()
+		out.PolicyV2 = &policySnapshot
+		if out.State != model.StateMaintenance {
+			out.Alerts = append(policyAlerts(policySnapshot), out.Alerts...)
+		}
+	} else if c.cfg.V2Enabled {
+		out.PolicyV2 = &model.PolicyV2Snapshot{
+			Enabled: true, Mode: model.PolicyModeEnforce,
+			ObserverHealth: model.HealthFailed, ObserverMessage: c.policyInitError,
+		}
+		out.Alerts = append([]model.Alert{{
+			ID: "policy_v2_init", Severity: "critical", Title: "V2 策略初始化失败",
+			Message: c.policyInitError, Component: "policy_v2", RaisedAt: time.Now().UTC(),
+		}}, out.Alerts...)
+	}
+	return out
+}
+
+func policyAlerts(snapshot model.PolicyV2Snapshot) []model.Alert {
+	now := time.Now().UTC()
+	alerts := make([]model.Alert, 0, 3)
+	if snapshot.ObserverHealth == model.HealthFailed {
+		alerts = append(alerts, model.Alert{
+			ID: "policy_v2_observer", Severity: "critical", Title: "V2 连接观测异常",
+			Message: snapshot.ObserverMessage, Component: "policy_v2", RaisedAt: now,
+		})
+	}
+	if snapshot.ViolationCount > 0 {
+		alerts = append(alerts, model.Alert{
+			ID: "policy_v2_violation", Severity: "critical", Title: "AI 策略违例",
+			Message:   fmt.Sprintf("发现 %d 条活动连接未经过期望出口。", snapshot.ViolationCount),
+			Component: "policy_v2", RaisedAt: now,
+		})
+	}
+	return alerts
+}
+
+func (c *Controller) policyViolationObserved(connection model.PolicyConnection) {
+	target := connection.Host
+	if target == "" {
+		target = connection.DestinationIP
+	}
+	c.mu.Lock()
+	c.addEventLocked("critical", "policy_v2", fmt.Sprintf("策略违例: %s -> %s 未经过期望出口", filepath.Base(connection.ProcessPath), target))
+	c.mu.Unlock()
+}
+
+func (c *Controller) PolicySnapshot() (model.PolicyV2Snapshot, error) {
+	if c.policyEngine == nil {
+		if c.policyInitError != "" {
+			return model.PolicyV2Snapshot{}, errors.New(c.policyInitError)
+		}
+		return model.PolicyV2Snapshot{}, errors.New("V2 policy is disabled")
+	}
+	return c.policyEngine.Snapshot(), nil
+}
+
+func (c *Controller) RestartTunnel(parent context.Context) error {
+	if c.safelyPaused() {
+		return errors.New("保护已安全暂停，请使用启动保护")
+	}
+	if len(c.cfg.RecoveryCommand) == 0 {
+		return fmt.Errorf("recoveryCommand is not configured")
+	}
+	c.mu.Lock()
+	c.snapshot.Recovering = true
+	c.transitionLocked(model.StateRecovering, "guard", "正在执行隧道恢复命令")
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	_, err := c.runner.Run(ctx, c.cfg.RecoveryCommand[0], c.cfg.RecoveryCommand[1:]...)
+	c.mu.Lock()
+	c.snapshot.Recovering = false
+	if err != nil {
+		c.addEventLocked("error", "provider", "隧道恢复失败: "+err.Error())
+	} else {
+		c.addEventLocked("info", "provider", "隧道恢复命令执行完成")
+	}
+	c.mu.Unlock()
+	if err == nil {
+		time.Sleep(2 * time.Second)
+		c.CheckNow(parent)
+	}
+	return err
+}
+
+func (c *Controller) StartTunnel(parent context.Context) error {
+	return c.runTunnelAction(parent, c.cfg.StartCommand, "正在启动东京保护", "东京保护启动完成", "东京保护启动失败")
+}
+
+func (c *Controller) PauseTunnel(parent context.Context) error {
+	if !c.snapshotProtected() {
+		return errors.New("PF Kill Switch 未生效，拒绝暂停隧道")
+	}
+	return c.runTunnelAction(parent, c.cfg.PauseCommand, "正在安全暂停东京隧道", "东京隧道已安全暂停，公网保持阻断", "安全暂停失败")
+}
+
+func (c *Controller) snapshotProtected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshot.Protected
+}
+
+func (c *Controller) runTunnelAction(parent context.Context, command []string, started, succeeded, failed string) error {
+	if len(command) == 0 {
+		return errors.New("tunnel lifecycle command is not configured")
+	}
+	c.mu.Lock()
+	c.snapshot.Recovering = true
+	c.transitionLocked(model.StateRecovering, "guard", started)
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
+	defer cancel()
+	output, err := c.runner.Run(ctx, command[0], command[1:]...)
+	c.mu.Lock()
+	c.snapshot.Recovering = false
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if warning, found := strings.CutPrefix(line, "WARNING: "); found {
+			c.addEventLocked("warning", "provider", warning)
+		} else if information, found := strings.CutPrefix(line, "INFO: "); found {
+			c.addEventLocked("info", "provider", information)
+		}
+	}
+	if err != nil {
+		c.addEventLocked("error", "provider", failed+": "+err.Error())
+	} else {
+		c.addEventLocked("info", "provider", succeeded)
+	}
+	c.mu.Unlock()
+	c.CheckNow(parent)
+	return err
+}
+
+func (c *Controller) apply(output checkOutput) {
+	now := time.Now().UTC()
+	byID := make(map[string]model.Component, len(output.components))
+	for _, component := range output.components {
+		byID[component.ID] = component
+	}
+	protected := isHealthy(byID["firewall"])
+	connected := allHealthy(byID, "network_conflict", "firewall_config", "firewall_binding", "provider", "provider_service", "guard_service", "tunnel", "transport", "egress", "dns", "config")
+	if c.policyEngine != nil {
+		policySnapshot := c.policyEngine.Snapshot()
+		if policySnapshot.ObserverHealth != model.HealthHealthy || policySnapshot.ViolationCount > 0 {
+			connected = false
+		}
+	}
+	paused := c.safelyPaused()
+	state := model.StateHealthy
+	switch {
+	case !protected:
+		state = model.StateUnprotected
+	case paused:
+		state = model.StateMaintenance
+		connected = false
+	case protected && !connected:
+		state = model.StateDegradedLocked
+	case protected && connected:
+		state = model.StateHealthy
+	}
+	stages := buildStages(byID)
+	alerts := buildAlerts(byID, state, now)
+	if state == model.StateMaintenance {
+		alerts = []model.Alert{{
+			ID: "safely_paused", Severity: "info", Title: "东京保护已安全暂停",
+			Message: "PF Kill Switch 仍在阻断本地公网回落。", Component: "provider", RaisedAt: now,
+		}}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	previousComponents := make(map[string]model.Component, len(c.snapshot.Components))
+	for _, component := range c.snapshot.Components {
+		previousComponents[component.ID] = component
+	}
+	for _, component := range output.components {
+		if paused && expectedPausedComponent(component.ID) {
+			continue
+		}
+		previous, ok := previousComponents[component.ID]
+		if !ok && (component.Health == model.HealthFailed || component.Health == model.HealthDegraded) {
+			severity := "warning"
+			if component.Health == model.HealthFailed && component.Required {
+				severity = "critical"
+			}
+			c.addEventLocked(severity, component.ID, component.Name+": "+component.Summary)
+		} else if ok && previous.Health != component.Health {
+			severity := "info"
+			if component.Health == model.HealthFailed || component.Health == model.HealthDegraded {
+				severity = "warning"
+				if component.Health == model.HealthFailed && component.Required {
+					severity = "critical"
+				}
+			}
+			c.addEventLocked(severity, component.ID, fmt.Sprintf("%s: %s -> %s", component.Name, previous.Health, component.Health))
+		}
+	}
+	if c.snapshot.LastCheckAt.IsZero() {
+		c.addEventLocked("info", "guard", "首次组件检查完成")
+	}
+	if c.snapshot.State != state {
+		c.transitionLocked(state, "guard", fmt.Sprintf("保护状态变更: %s -> %s", c.snapshot.State, state))
+	}
+	c.snapshot.Version = c.version
+	c.snapshot.State = state
+	c.snapshot.Protected = protected
+	c.snapshot.Connected = connected
+	c.snapshot.Provider = c.cfg.ProviderName
+	c.snapshot.ExpectedEgress = c.cfg.ExpectedEgressIP
+	c.snapshot.ObservedEgress = output.observedIP
+	c.snapshot.PhysicalIF = output.physicalIF
+	c.snapshot.TunnelIF = output.tunnelIF
+	c.snapshot.LastCheckAt = now
+	c.snapshot.NextCheckAt = now.Add(c.cfg.CheckInterval())
+	c.snapshot.Components = output.components
+	c.snapshot.Stages = stages
+	c.snapshot.Tests = output.tests
+	c.snapshot.Alerts = alerts
+	c.snapshot.Events = append([]model.Event(nil), c.events...)
+}
+
+func expectedPausedComponent(id string) bool {
+	switch id {
+	case "provider", "provider_service", "tunnel", "egress", "dns", "ipv6":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Controller) setChecking(value bool) {
+	c.mu.Lock()
+	c.snapshot.Checking = value
+	c.mu.Unlock()
+}
+
+func (c *Controller) transitionLocked(state model.GuardState, component, message string) {
+	if c.snapshot.State != state {
+		c.snapshot.StateSince = time.Now().UTC()
+	}
+	c.snapshot.State = state
+	severity := "info"
+	if state == model.StateUnprotected {
+		severity = "critical"
+	} else if state == model.StateDegradedLocked {
+		severity = "warning"
+	}
+	c.addEventLocked(severity, component, message)
+}
+
+func (c *Controller) addEventLocked(severity, component, message string) {
+	event := model.Event{ID: c.eventID.Add(1), Time: time.Now().UTC(), Severity: severity, Component: component, Message: message}
+	c.events = append([]model.Event{event}, c.events...)
+	if len(c.events) > c.cfg.EventLimit {
+		c.events = c.events[:c.cfg.EventLimit]
+	}
+	c.snapshot.Events = append([]model.Event(nil), c.events...)
+	log.Printf("[%s] %s: %s", severity, component, message)
+	c.persistEvent(event)
+	if (severity == "critical" || severity == "warning") && len(c.cfg.NotificationCommand) > 0 {
+		command := append([]string(nil), c.cfg.NotificationCommand...)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, _ = c.runner.Run(ctx, command[0], append(command[1:], severity, component, message)...)
+		}()
+	}
+}
+
+func (c *Controller) persistEvent(event model.Event) {
+	if c.cfg.EventLogFile == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(c.cfg.EventLogFile), 0o750); err != nil {
+		return
+	}
+	f, err := os.OpenFile(c.cfg.EventLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_ = json.NewEncoder(f).Encode(event)
+}
+
+func (c *Controller) loadEvents() {
+	if c.cfg.EventLogFile == "" {
+		return
+	}
+	b, err := os.ReadFile(c.cfg.EventLogFile)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	for i := len(lines) - 1; i >= 0 && len(c.events) < c.cfg.EventLimit; i-- {
+		var event model.Event
+		if json.Unmarshal([]byte(lines[i]), &event) == nil {
+			if event.ID > c.eventID.Load() {
+				c.eventID.Store(event.ID)
+			}
+			if legacyPolicyEvent(event) {
+				continue
+			}
+			c.events = append(c.events, event)
+		}
+	}
+	c.snapshot.Events = append([]model.Event(nil), c.events...)
+}
+
+func legacyPolicyEvent(event model.Event) bool {
+	return event.Component == "policy_v2" && strings.HasPrefix(event.Message, "发现待分类连接:")
+}
+
+func buildStages(byID map[string]model.Component) []model.Stage {
+	return []model.Stage{
+		stage("network", "网络边界", mergeHealth(byID["network_conflict"], byID["transport"])),
+		stage("firewall", "PF 边界", byID["firewall"]),
+		stage("tunnel", "TUN", byID["tunnel"]),
+		stage("provider", "sing-box", byID["provider"]),
+		stage("vps", "VPS 传输", byID["transport"]),
+		stage("egress", "固定出口", byID["egress"]),
+		stage("dns", "DNS / IPv6", mergeHealth(byID["dns"], byID["ipv6"])),
+	}
+}
+
+func buildAlerts(byID map[string]model.Component, state model.GuardState, now time.Time) []model.Alert {
+	alerts := make([]model.Alert, 0)
+	if state == model.StateUnprotected {
+		alerts = append(alerts, model.Alert{ID: "unprotected", Severity: "critical", Title: "出口未受保护", Message: "PF Kill Switch 未确认生效，存在本地公网回落风险。", Component: "firewall", RaisedAt: now})
+	}
+	for _, component := range byID {
+		if state == model.StateUnprotected && component.ID == "firewall" {
+			continue
+		}
+		if component.Required && (component.Health == model.HealthFailed || component.Health == model.HealthDegraded) {
+			severity := "warning"
+			if component.Health == model.HealthFailed {
+				severity = "critical"
+			}
+			alerts = append(alerts, model.Alert{ID: component.ID, Severity: severity, Title: component.Name + "异常", Message: component.Summary + ": " + component.Detail, Component: component.ID, RaisedAt: now})
+		}
+	}
+	sort.SliceStable(alerts, func(i, j int) bool {
+		return severityRank(alerts[i].Severity) > severityRank(alerts[j].Severity)
+	})
+	return alerts
+}
+
+func severityRank(severity string) int {
+	switch severity {
+	case "critical":
+		return 3
+	case "warning":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func stage(id, name string, component model.Component) model.Stage {
+	return model.Stage{ID: id, Name: name, Health: component.Health, Summary: component.Summary}
+}
+
+func mergeHealth(a, b model.Component) model.Component {
+	result := a
+	result.Name = "DNS / IPv6"
+	result.Summary = strings.TrimSpace(a.Summary + " / " + b.Summary)
+	if healthRank(b.Health) > healthRank(result.Health) {
+		result.Health = b.Health
+	}
+	return result
+}
+
+func isHealthy(component model.Component) bool { return component.Health == model.HealthHealthy }
+
+func allHealthy(byID map[string]model.Component, ids ...string) bool {
+	for _, id := range ids {
+		if !isHealthy(byID[id]) {
+			return false
+		}
+	}
+	return true
+}
+
+func healthRank(health model.Health) int {
+	switch health {
+	case model.HealthFailed:
+		return 3
+	case model.HealthDegraded:
+		return 2
+	case model.HealthUnknown:
+		return 1
+	default:
+		return 0
+	}
+}
