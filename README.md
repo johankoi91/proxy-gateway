@@ -11,6 +11,11 @@ The image runs:
 
 The console displays service health, WireGuard handshakes and transfer totals. It can create or revoke clients and provides WireGuard, VLESS and Clash configurations with QR codes.
 
+For every client, the VLESS dialog also downloads `<client>.vps-config.json`. This
+versioned file is intended for automated client provisioning, including a future
+Mac Guard importer. It contains the selected client's VLESS UUID and Reality
+short ID, so store it like a password.
+
 ## Requirements
 
 - Linux x86_64 server
@@ -26,7 +31,7 @@ The runtime container uses host networking plus `NET_ADMIN`, `NET_RAW` and `SYS_
 Copy the complete offline bundle to the new server, then run:
 
 ```bash
-cd lightnode-vpn-gateway-offline-1.0.0
+cd lightnode-vpn-gateway-offline-1.0.1
 sha256sum -c SHA256SUMS
 sudo ./install.sh
 ```
@@ -73,6 +78,51 @@ HTTP; Basic Auth credentials and client private keys would be readable in transi
 TCP 443 is shared by an SNI-aware HAProxy frontend: the configured admin server
 name is passed to the HTTPS console, while all other TLS traffic is passed to
 VLESS Reality on its container-local port. WireGuard continues to use UDP 443.
+
+## VPS configuration export
+
+Open a client, choose **VLESS Reality**, then select **VPS 配置**. The authenticated
+endpoint is:
+
+```text
+GET /api/clients/{id}/vps-config.json
+```
+
+The response is an attachment with `Cache-Control: no-store` and this stable
+shape:
+
+```json
+{
+  "schema": "lightnode.vps-config",
+  "version": 1,
+  "client": { "id": "...", "name": "mac-vm" },
+  "endpoint": {
+    "address": "149.104.78.121",
+    "port": 443,
+    "expectedEgress": "149.104.78.121"
+  },
+  "vless": {
+    "uuid": "REDACTED",
+    "flow": "xtls-rprx-vision",
+    "transport": "tcp",
+    "encryption": "none",
+    "tls": {
+      "enabled": true,
+      "serverName": "www.cloudflare.com",
+      "utlsFingerprint": "chrome",
+      "reality": {
+        "enabled": true,
+        "publicKey": "REDACTED",
+        "shortId": "REDACTED"
+      }
+    }
+  }
+}
+```
+
+The export does not contain the WireGuard private key, the server's Reality
+private key, the SSH key or the console password. Do not commit downloaded
+exports to source control.
 
 For a browser-trusted certificate, point a DNS name directly at the server and
 use Certbot. Install `scripts/certbot-deploy-hook.sh` as a Certbot deploy hook so

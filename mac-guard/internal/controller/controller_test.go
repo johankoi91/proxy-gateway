@@ -1,4 +1,4 @@
-package guard
+package controller
 
 import (
 	"context"
@@ -10,9 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"lightnode-mac-guard/internal/config"
-	"lightnode-mac-guard/internal/model"
+	"lightnode-mac-controller/internal/config"
+	"lightnode-mac-controller/internal/model"
 )
+
+func testControllerConfig() config.Config {
+	cfg := config.Default()
+	cfg.ConnectionAPISecret = "test-connection-secret"
+	return cfg
+}
 
 func TestAllHealthy(t *testing.T) {
 	components := map[string]model.Component{
@@ -33,25 +39,25 @@ func TestRuntimeConfigurationIsSanitized(t *testing.T) {
 	directory := t.TempDir()
 	singBoxConfig := filepath.Join(directory, "sing-box.json")
 	singBoxJSON := `{
-  "dns":{"strategy":"ipv4_only","final":"dns-ai","servers":[{"type":"https","tag":"dns-ai","server":"104.16.249.249","server_port":443,"path":"/dns-query","detour":"tokyo","tls":{"server_name":"cloudflare-dns.com"}}]},
+	  "dns":{"strategy":"ipv4_only","final":"dns-tunnel","servers":[{"type":"https","tag":"dns-tunnel","server":"104.16.249.249","server_port":443,"path":"/dns-query","detour":"tokyo","tls":{"server_name":"cloudflare-dns.com"}}]},
   "inbounds":[{"type":"tun","tag":"tun-in","address":["172.19.0.1/30"],"mtu":1280,"dns_mode":"hijack","auto_route":true,"strict_route":true}],
   "outbounds":[{"type":"vless","tag":"tokyo","server":"149.104.78.121","server_port":443,"uuid":"private-uuid-value","flow":"xtls-rprx-vision","tls":{"enabled":true,"server_name":"www.cloudflare.com","reality":{"public_key":"private-public-key","short_id":"private-short-id"},"utls":{"enabled":true,"fingerprint":"chrome"}}}]
 }`
 	if err := os.WriteFile(singBoxConfig, []byte(singBoxJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Default()
+	cfg := testControllerConfig()
 	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
 	cfg.SingBoxConfigFile = singBoxConfig
 	cfg.AdminPassword = "dashboard-secret-value"
-	cfg.V2ClashAPISecret = "observer-secret-value"
+	cfg.ConnectionAPISecret = "observer-secret-value"
 	controller := NewController(cfg, ipv6Runner{}, "test")
 	payload, err := json.Marshal(controller.Snapshot())
 	if err != nil {
 		t.Fatal(err)
 	}
 	encoded := string(payload)
-	for _, secret := range []string{cfg.AdminPassword, cfg.V2ClashAPISecret, "private-uuid-value", "private-public-key", "private-short-id"} {
+	for _, secret := range []string{cfg.AdminPassword, cfg.ConnectionAPISecret, "private-uuid-value", "private-public-key", "private-short-id"} {
 		if strings.Contains(encoded, secret) {
 			t.Fatalf("runtime snapshot leaked secret %q", secret)
 		}
@@ -211,7 +217,7 @@ func (r networkRunner) Run(_ context.Context, name string, args ...string) ([]by
 }
 
 func TestNetworkConflictCheck(t *testing.T) {
-	cfg := config.Default()
+	cfg := testControllerConfig()
 	now := time.Now().UTC()
 	healthy := newChecker(cfg, networkRunner{
 		proxyOutput: "HTTPEnable : 0\nHTTPSEnable : 0\nSOCKSEnable : 0\n",
@@ -238,7 +244,7 @@ func (r ipv6Runner) Run(_ context.Context, name string, _ ...string) ([]byte, er
 }
 
 func TestIPv6ProbeOnlyTreatsRealIPv6AsLeak(t *testing.T) {
-	cfg := config.Default()
+	cfg := testControllerConfig()
 	for _, tc := range []struct {
 		name   string
 		output string
@@ -261,7 +267,7 @@ func TestIPv6ProbeOnlyTreatsRealIPv6AsLeak(t *testing.T) {
 }
 
 func TestTunnelFailureWithActiveFirewallIsDegradedLocked(t *testing.T) {
-	cfg := config.Default()
+	cfg := testControllerConfig()
 	cfg.EventLogFile = filepath.Join(t.TempDir(), "events.jsonl")
 	controller := NewController(cfg, ipv6Runner{}, "test")
 	controller.apply(checkOutput{components: []model.Component{
@@ -275,7 +281,7 @@ func TestTunnelFailureWithActiveFirewallIsDegradedLocked(t *testing.T) {
 }
 
 func TestMissingFirewallIsUnprotected(t *testing.T) {
-	cfg := config.Default()
+	cfg := testControllerConfig()
 	cfg.EventLogFile = filepath.Join(t.TempDir(), "events.jsonl")
 	controller := NewController(cfg, ipv6Runner{}, "test")
 	controller.apply(checkOutput{components: []model.Component{
@@ -287,31 +293,13 @@ func TestMissingFirewallIsUnprotected(t *testing.T) {
 	}
 }
 
-func TestLegacyClassificationEventsAreHidden(t *testing.T) {
-	directory := t.TempDir()
-	eventLog := filepath.Join(directory, "events.jsonl")
-	content := `{"id":41,"time":"2026-09-05T10:00:00Z","severity":"warning","component":"policy_v2","message":"发现待分类连接: old -> example.com:443"}
-{"id":42,"time":"2026-09-05T10:01:00Z","severity":"info","component":"guard","message":"首次组件检查完成"}
-`
-	if err := os.WriteFile(eventLog, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Default()
-	cfg.EventLogFile = eventLog
-	controller := NewController(cfg, ipv6Runner{}, "test")
-	snapshot := controller.Snapshot()
-	if len(snapshot.Events) != 1 || snapshot.Events[0].ID != 42 {
-		t.Fatalf("events = %#v", snapshot.Events)
-	}
-}
-
 func TestSafelyPausedStateKeepsFirewallProtection(t *testing.T) {
 	directory := t.TempDir()
 	maintenanceFile := filepath.Join(directory, "safely-paused")
 	if err := os.WriteFile(maintenanceFile, []byte("paused\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Default()
+	cfg := testControllerConfig()
 	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
 	cfg.MaintenanceFile = maintenanceFile
 	controller := NewController(cfg, ipv6Runner{}, "test")
@@ -330,7 +318,7 @@ func TestSafelyPausedStateKeepsFirewallProtection(t *testing.T) {
 
 func TestLifecycleWarningIsRecorded(t *testing.T) {
 	directory := t.TempDir()
-	cfg := config.Default()
+	cfg := testControllerConfig()
 	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
 	cfg.MaintenanceFile = ""
 	controller := NewController(cfg, outputRunner{output: "INFO: ChatGPT exited normally.\nWARNING: Claude is still running.\n"}, "test")

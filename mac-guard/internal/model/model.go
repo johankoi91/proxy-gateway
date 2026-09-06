@@ -11,16 +11,15 @@ const (
 	HealthUnknown  Health = "unknown"
 )
 
-type GuardState string
+type ControllerState string
 
 const (
-	StateBootLocked       GuardState = "boot_locked"
-	StateTunnelConnecting GuardState = "tunnel_connecting"
-	StateHealthy          GuardState = "healthy"
-	StateDegradedLocked   GuardState = "degraded_locked"
-	StateUnprotected      GuardState = "unprotected"
-	StateRecovering       GuardState = "recovering"
-	StateMaintenance      GuardState = "maintenance"
+	StateBootLocked     ControllerState = "boot_locked"
+	StateHealthy        ControllerState = "healthy"
+	StateDegradedLocked ControllerState = "degraded_locked"
+	StateUnprotected    ControllerState = "unprotected"
+	StateRecovering     ControllerState = "recovering"
+	StateMaintenance    ControllerState = "maintenance"
 )
 
 type Component struct {
@@ -70,8 +69,6 @@ type Event struct {
 }
 
 type RuntimeConfiguration struct {
-	Profile                      string                          `json:"profile"`
-	Transport                    string                          `json:"transport"`
 	VPSAddress                   string                          `json:"vpsAddress"`
 	VPSPort                      int                             `json:"vpsPort"`
 	ExpectedEgress               string                          `json:"expectedEgress"`
@@ -81,7 +78,7 @@ type RuntimeConfiguration struct {
 	PFAnchor                     string                          `json:"pfAnchor"`
 	PFAnchorFile                 string                          `json:"pfAnchorFile"`
 	PFMainConfigFile             string                          `json:"pfMainConfigFile"`
-	GuardService                 string                          `json:"guardService"`
+	ControllerService            string                          `json:"controllerService"`
 	ProviderService              string                          `json:"providerService"`
 	ListenAddress                string                          `json:"listenAddress"`
 	AuthenticationEnabled        bool                            `json:"authenticationEnabled"`
@@ -109,25 +106,25 @@ type RuntimeSetting struct {
 }
 
 type Snapshot struct {
-	Version        string               `json:"version"`
-	State          GuardState           `json:"state"`
-	StateSince     time.Time            `json:"stateSince"`
-	Protected      bool                 `json:"protected"`
-	Connected      bool                 `json:"connected"`
-	Provider       string               `json:"provider"`
-	ExpectedEgress string               `json:"expectedEgress"`
-	ObservedEgress string               `json:"observedEgress"`
-	PhysicalIF     string               `json:"physicalInterface"`
-	TunnelIF       string               `json:"tunnelInterface"`
-	LastCheckAt    time.Time            `json:"lastCheckAt"`
-	NextCheckAt    time.Time            `json:"nextCheckAt"`
-	Checking       bool                 `json:"checking"`
-	Recovering     bool                 `json:"recovering"`
-	Components     []Component          `json:"components"`
-	Stages         []Stage              `json:"stages"`
-	Tests          []TestResult         `json:"tests"`
-	Alerts         []Alert              `json:"alerts"`
-	Events         []Event              `json:"events"`
-	PolicyV2       *PolicyV2Snapshot    `json:"policyV2,omitempty"`
-	RuntimeConfig  RuntimeConfiguration `json:"runtimeConfig"`
+	Version        string                `json:"version"`
+	State          ControllerState       `json:"state"`
+	StateSince     time.Time             `json:"stateSince"`
+	Protected      bool                  `json:"protected"`
+	Connected      bool                  `json:"connected"`
+	Provider       string                `json:"provider"`
+	ExpectedEgress string                `json:"expectedEgress"`
+	ObservedEgress string                `json:"observedEgress"`
+	PhysicalIF     string                `json:"physicalInterface"`
+	TunnelIF       string                `json:"tunnelInterface"`
+	LastCheckAt    time.Time             `json:"lastCheckAt"`
+	NextCheckAt    time.Time             `json:"nextCheckAt"`
+	Checking       bool                  `json:"checking"`
+	Recovering     bool                  `json:"recovering"`
+	Components     []Component           `json:"components"`
+	Stages         []Stage               `json:"stages"`
+	Tests          []TestResult          `json:"tests"`
+	Alerts         []Alert               `json:"alerts"`
+	Events         []Event               `json:"events"`
+	Connections    ConnectionObservation `json:"connections"`
+	RuntimeConfig  RuntimeConfiguration  `json:"runtimeConfig"`
 }

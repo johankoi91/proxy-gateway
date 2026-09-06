@@ -1,4 +1,4 @@
-package guard
+package controller
 
 import (
 	"context"
@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"lightnode-mac-guard/internal/config"
-	"lightnode-mac-guard/internal/model"
-	"lightnode-mac-guard/internal/singconfig"
+	"lightnode-mac-controller/internal/config"
+	"lightnode-mac-controller/internal/model"
+	"lightnode-mac-controller/internal/singconfig"
 )
 
 var (
@@ -79,9 +79,9 @@ func (c *Controller) UpdateNode(parent context.Context, update model.NodeUpdate)
 	c.checkMu.Lock()
 	defer c.checkMu.Unlock()
 
-	guardPath := c.cfg.ConfigFilePath
+	controllerPath := c.cfg.ConfigFilePath
 	singPath := c.cfg.SingBoxConfigFile
-	oldGuard, err := os.ReadFile(guardPath)
+	oldController, err := os.ReadFile(controllerPath)
 	if err != nil {
 		return model.NodeConfiguration{}, err
 	}
@@ -89,7 +89,10 @@ func (c *Controller) UpdateNode(parent context.Context, update model.NodeUpdate)
 	if err != nil {
 		return model.NodeConfiguration{}, err
 	}
-	newGuard, newSing, err := buildNodeCandidates(oldGuard, oldSing, update)
+	if _, err := c.createBackupFromDocumentsLocked("before-node-update", oldController, oldSing); err != nil {
+		return model.NodeConfiguration{}, fmt.Errorf("create node safety backup: %w", err)
+	}
+	newController, newSing, err := buildNodeCandidates(oldController, oldSing, update)
 	if err != nil {
 		return model.NodeConfiguration{}, err
 	}
@@ -99,35 +102,39 @@ func (c *Controller) UpdateNode(parent context.Context, update model.NodeUpdate)
 	if err := writeNodeFileAtomic(singPath, newSing); err != nil {
 		return model.NodeConfiguration{}, err
 	}
-	if err := writeNodeFileAtomic(guardPath, newGuard); err != nil {
+	if err := writeNodeFileAtomic(controllerPath, newController); err != nil {
 		_ = writeNodeFileAtomic(singPath, oldSing)
 		return model.NodeConfiguration{}, err
 	}
 
 	rollback := func(cause error) (model.NodeConfiguration, error) {
 		_ = writeNodeFileAtomic(singPath, oldSing)
-		_ = writeNodeFileAtomic(guardPath, oldGuard)
-		_, _ = c.runner.Run(context.Background(), "/usr/local/libexec/lightnode-guard", "firewall", "refresh")
-		_, _ = c.runner.Run(context.Background(), "/usr/local/libexec/lightnode-guard", "tunnel", "start")
+		_ = writeNodeFileAtomic(controllerPath, oldController)
+		_, _ = c.runner.Run(context.Background(), "/usr/local/libexec/lightnode-controller", "firewall", "refresh")
+		_, _ = c.runner.Run(context.Background(), "/usr/local/libexec/lightnode-controller", "tunnel", "start")
 		return model.NodeConfiguration{}, cause
 	}
-	if _, err := c.runner.Run(parent, "/usr/local/libexec/lightnode-guard", "firewall", "refresh"); err != nil {
+	if _, err := c.runner.Run(parent, "/usr/local/libexec/lightnode-controller", "firewall", "refresh"); err != nil {
 		return rollback(fmt.Errorf("refresh PF for new node: %w", err))
 	}
-	if _, err := c.runner.Run(parent, "/usr/local/libexec/lightnode-guard", "tunnel", "start"); err != nil {
+	if _, err := c.runner.Run(parent, "/usr/local/libexec/lightnode-controller", "tunnel", "start"); err != nil {
 		return rollback(fmt.Errorf("activate new node: %w", err))
 	}
-	result, err := nodeConfigurationFromDocuments(newGuard, newSing)
+	result, err := nodeConfigurationFromDocuments(newController, newSing)
 	if err != nil {
 		return rollback(err)
 	}
+	c.scheduleControllerRestart()
+	return result, nil
+}
+
+func (c *Controller) scheduleControllerRestart() {
 	go func() {
 		time.Sleep(2 * time.Second)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_, _ = c.runner.Run(ctx, "/bin/launchctl", "kickstart", "-k", "system/"+c.cfg.LaunchDaemonLabel)
 	}()
-	return result, nil
 }
 
 func validateNodeUpdate(update model.NodeUpdate) error {
@@ -153,17 +160,17 @@ func validateNodeUpdate(update model.NodeUpdate) error {
 		return errors.New("VLESS UUID 格式无效")
 	}
 	if update.RealityPublicKey != "" && !realityKeyPattern.MatchString(update.RealityPublicKey) {
-		return errors.New("Reality 公钥格式无效")
+		return errors.New("reality 公钥格式无效")
 	}
 	if update.RealityShortID != "" && (!shortIDPattern.MatchString(update.RealityShortID) || len(update.RealityShortID)%2 != 0) {
-		return errors.New("Reality short ID 必须是偶数长度十六进制")
+		return errors.New("reality short ID 必须是偶数长度十六进制")
 	}
 	return nil
 }
 
-func buildNodeCandidates(guardData, singData []byte, update model.NodeUpdate) ([]byte, []byte, error) {
-	var guardDocument map[string]any
-	if err := json.Unmarshal(guardData, &guardDocument); err != nil {
+func buildNodeCandidates(controllerData, singData []byte, update model.NodeUpdate) ([]byte, []byte, error) {
+	var controllerDocument map[string]any
+	if err := json.Unmarshal(controllerData, &controllerDocument); err != nil {
 		return nil, nil, err
 	}
 	var singDocument map[string]any
@@ -202,10 +209,10 @@ func buildNodeCandidates(guardData, singData []byte, update model.NodeUpdate) ([
 	if err := singconfig.EnforceGlobalTokyo(singDocument); err != nil {
 		return nil, nil, err
 	}
-	guardDocument["vpsAddress"] = strings.TrimSpace(update.Server)
-	guardDocument["vpsPort"] = update.Port
-	guardDocument["expectedEgressIp"] = strings.TrimSpace(update.ExpectedEgress)
-	newGuard, err := json.MarshalIndent(guardDocument, "", "  ")
+	controllerDocument["vpsAddress"] = strings.TrimSpace(update.Server)
+	controllerDocument["vpsPort"] = update.Port
+	controllerDocument["expectedEgressIp"] = strings.TrimSpace(update.ExpectedEgress)
+	newController, err := json.MarshalIndent(controllerDocument, "", "  ")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -213,12 +220,12 @@ func buildNodeCandidates(guardData, singData []byte, update model.NodeUpdate) ([
 	if err != nil {
 		return nil, nil, err
 	}
-	return append(newGuard, '\n'), append(newSing, '\n'), nil
+	return append(newController, '\n'), append(newSing, '\n'), nil
 }
 
-func nodeConfigurationFromDocuments(guardData, singData []byte) (model.NodeConfiguration, error) {
-	var guardDocument map[string]any
-	if err := json.Unmarshal(guardData, &guardDocument); err != nil {
+func nodeConfigurationFromDocuments(controllerData, singData []byte) (model.NodeConfiguration, error) {
+	var controllerDocument map[string]any
+	if err := json.Unmarshal(controllerData, &controllerDocument); err != nil {
 		return model.NodeConfiguration{}, err
 	}
 	var singDocument map[string]any
@@ -234,7 +241,7 @@ func nodeConfigurationFromDocuments(guardData, singData []byte) (model.NodeConfi
 	utls := singconfig.Object(tls, "utls")
 	return model.NodeConfiguration{
 		Server: singconfig.String(outbound["server"]), Port: singconfig.Int(outbound["server_port"]),
-		ExpectedEgress: singconfig.String(guardDocument["expectedEgressIp"]), Flow: singconfig.String(outbound["flow"]),
+		ExpectedEgress: singconfig.String(controllerDocument["expectedEgressIp"]), Flow: singconfig.String(outbound["flow"]),
 		TLSServerName: singconfig.String(tls["server_name"]), UTLSFingerprint: singconfig.String(utls["fingerprint"]),
 		UUIDConfigured: configuredSecret(singconfig.String(outbound["uuid"])), RealityPublicKeyConfigured: configuredSecret(singconfig.String(reality["public_key"])),
 		RealityShortIDConfigured: configuredSecret(singconfig.String(reality["short_id"])),

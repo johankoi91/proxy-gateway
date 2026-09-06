@@ -1,4 +1,4 @@
-package policy
+package observer
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"lightnode-mac-guard/internal/model"
+	"lightnode-mac-controller/internal/model"
 )
 
 type rawConnection struct {
@@ -31,28 +31,28 @@ type rawConnection struct {
 	Rule     string    `json:"rule"`
 }
 
-type clashConnections struct {
+type connectionPayload struct {
 	Connections []rawConnection `json:"connections"`
 }
 
-type clashClient struct {
+type connectionAPIClient struct {
 	url    string
 	secret string
 	client *http.Client
 }
 
-func newClashClient(rawURL, secret string) (*clashClient, error) {
+func newConnectionAPIClient(rawURL, secret string) (*connectionAPIClient, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Clash API URL: %w", err)
+		return nil, fmt.Errorf("parse connection API URL: %w", err)
 	}
 	hostname := parsed.Hostname()
 	ip := net.ParseIP(hostname)
 	if parsed.Scheme != "http" || (hostname != "localhost" && (ip == nil || !ip.IsLoopback())) {
-		return nil, fmt.Errorf("Clash API must use loopback HTTP, got %q", rawURL)
+		return nil, fmt.Errorf("connection API must use loopback HTTP, got %q", rawURL)
 	}
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/connections"
-	return &clashClient{
+	return &connectionAPIClient{
 		url:    parsed.String(),
 		secret: secret,
 		client: &http.Client{
@@ -62,7 +62,7 @@ func newClashClient(rawURL, secret string) (*clashClient, error) {
 	}, nil
 }
 
-func (c *clashClient) connections(ctx context.Context) ([]rawConnection, error) {
+func (c *connectionAPIClient) connections(ctx context.Context) ([]rawConnection, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return nil, err
@@ -74,20 +74,20 @@ func (c *clashClient) connections(ctx context.Context) ([]rawConnection, error) 
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Clash API returned HTTP %d", response.StatusCode)
+		return nil, fmt.Errorf("connection API returned HTTP %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if err != nil {
 		return nil, err
 	}
-	var payload clashConnections
+	var payload connectionPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode Clash connections: %w", err)
+		return nil, fmt.Errorf("decode connection API response: %w", err)
 	}
 	return payload.Connections, nil
 }
 
-func (e *Engine) Start(ctx context.Context) {
+func (e *Observer) Start(ctx context.Context) {
 	go func() {
 		e.poll(ctx)
 		ticker := time.NewTicker(e.options.PollInterval)
@@ -103,7 +103,7 @@ func (e *Engine) Start(ctx context.Context) {
 	}()
 }
 
-func (e *Engine) poll(ctx context.Context) {
+func (e *Observer) poll(ctx context.Context) {
 	now := time.Now().UTC()
 	connections, err := e.client.connections(ctx)
 	if err != nil {
@@ -117,15 +117,16 @@ func (e *Engine) poll(ctx context.Context) {
 	e.observe(connections, now)
 }
 
-func (e *Engine) observe(connections []rawConnection, now time.Time) {
+func (e *Observer) observe(connections []rawConnection, now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	active := make([]model.PolicyConnection, 0, len(connections))
+	active := make([]model.ObservedConnection, 0, len(connections))
+	currentViolations := make(map[string]struct{})
 	for _, connection := range connections {
 		processPath := sanitizeProcessPath(connection.Metadata.ProcessPath)
 		host := normalizeHost(connection.Metadata.Host)
 		observedOutbound := strings.Join(connection.Chains, " > ")
-		active = append(active, model.PolicyConnection{
+		active = append(active, model.ObservedConnection{
 			ID:               connection.ID,
 			ProcessPath:      processPath,
 			Host:             host,
@@ -133,21 +134,22 @@ func (e *Engine) observe(connections []rawConnection, now time.Time) {
 			DestinationPort:  connection.Metadata.DestinationPort,
 			Network:          connection.Metadata.Network,
 			ObservedOutbound: observedOutbound,
-			Compliant:        e.connectionCompliant(observedOutbound),
+			Compliant:        connectionCompliant(connection.Chains),
 			Upload:           connection.Upload,
 			Download:         connection.Download,
 			StartedAt:        connection.Start,
 		})
 		activeConnection := active[len(active)-1]
 		if !activeConnection.Compliant {
+			currentViolations[connection.ID] = struct{}{}
 			if _, reported := e.reportedViolations[connection.ID]; !reported {
-				e.reportedViolations[connection.ID] = struct{}{}
 				if e.options.OnViolation != nil {
 					go e.options.OnViolation(activeConnection)
 				}
 			}
 		}
 	}
+	e.reportedViolations = currentViolations
 	sort.SliceStable(active, func(i, j int) bool { return active[i].StartedAt.After(active[j].StartedAt) })
 	if len(active) > 200 {
 		active = active[:200]
@@ -159,6 +161,11 @@ func (e *Engine) observe(connections []rawConnection, now time.Time) {
 	e.lastSuccessfulPoll = now
 }
 
-func (e *Engine) connectionCompliant(observedOutbound string) bool {
-	return strings.Contains(observedOutbound, "tokyo")
+func connectionCompliant(chains []string) bool {
+	for _, outbound := range chains {
+		if outbound == "tokyo" {
+			return true
+		}
+	}
+	return false
 }

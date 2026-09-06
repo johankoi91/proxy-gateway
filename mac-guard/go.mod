@@ -1,3 +1,3 @@
-module lightnode-mac-guard
+module lightnode-mac-controller
 
 go 1.21

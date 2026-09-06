@@ -1,5 +1,5 @@
 export type Health = "healthy" | "degraded" | "failed" | "unknown";
-export type GuardState = "boot_locked" | "tunnel_connecting" | "healthy" | "degraded_locked" | "unprotected" | "recovering" | "maintenance";
+export type ControllerState = "boot_locked" | "healthy" | "degraded_locked" | "unprotected" | "recovering" | "maintenance";
 
 export interface ComponentStatus {
   id: string;
@@ -39,7 +39,7 @@ export interface Alert {
   raisedAt: string;
 }
 
-export interface GuardEvent {
+export interface ControllerEvent {
   id: number;
   time: string;
   severity: string;
@@ -47,10 +47,7 @@ export interface GuardEvent {
   message: string;
 }
 
-export type PolicyMode = "enforce";
-export type PolicyProfile = "global_japan";
-
-export interface PolicyConnection {
+export interface ObservedConnection {
   id: string;
   processPath: string;
   host?: string;
@@ -64,21 +61,16 @@ export interface PolicyConnection {
   startedAt: string;
 }
 
-export interface PolicyV2Snapshot {
-  enabled: boolean;
-  mode: PolicyMode;
-  profile: PolicyProfile;
-  observerHealth: Health;
-  observerMessage: string;
+export interface ConnectionObservation {
+  health: Health;
+  message: string;
   lastPollAt?: string;
   lastSuccessfulPollAt?: string;
-  activeConnections: PolicyConnection[];
+  activeConnections: ObservedConnection[];
   violationCount: number;
 }
 
 export interface RuntimeConfiguration {
-  profile: string;
-  transport: string;
   vpsAddress: string;
   vpsPort: number;
   expectedEgress: string;
@@ -88,7 +80,7 @@ export interface RuntimeConfiguration {
   pfAnchor: string;
   pfAnchorFile: string;
   pfMainConfigFile: string;
-  guardService: string;
+  controllerService: string;
   providerService: string;
   listenAddress: string;
   authenticationEnabled: boolean;
@@ -139,9 +131,18 @@ export interface NodeUpdate {
   realityShortId?: string;
 }
 
+export interface BackupMetadata {
+  id: string;
+  createdAt: string;
+  reason: string;
+  server: string;
+  port: number;
+  expectedEgress: string;
+}
+
 export interface Snapshot {
   version: string;
-  state: GuardState;
+  state: ControllerState;
   stateSince: string;
   protected: boolean;
   connected: boolean;
@@ -158,7 +159,7 @@ export interface Snapshot {
   stages: Stage[];
   tests: TestResult[];
   alerts: Alert[];
-  events: GuardEvent[];
-  policyV2?: PolicyV2Snapshot;
+  events: ControllerEvent[];
+  connections: ConnectionObservation;
   runtimeConfig: RuntimeConfiguration;
 }

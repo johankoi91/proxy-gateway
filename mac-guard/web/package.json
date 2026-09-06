@@ -1,7 +1,7 @@
 {
-  "name": "lightnode-mac-guard-web",
+  "name": "lightnode-mac-controller-web",
   "private": true,
-  "version": "0.2.0-alpha.18",
+  "version": "0.2.0-alpha.20",
   "type": "module",
   "scripts": {
     "dev": "vite",

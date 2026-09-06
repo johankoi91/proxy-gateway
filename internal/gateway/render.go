@@ -131,6 +131,41 @@ func (m *Manager) VLESSURI(client Client) string {
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", client.VLESSUUID, state.PublicIP, state.Reality.Port, query.Encode(), url.PathEscape("VPN-"+client.Name))
 }
 
+func (m *Manager) VPSConfig(client Client) string {
+	state := m.State()
+	configuration := VPSConfig{
+		Schema:  VPSConfigSchema,
+		Version: VPSConfigVersion,
+		Client: VPSConfigClient{
+			ID:   client.ID,
+			Name: client.Name,
+		},
+		Endpoint: VPSConfigEndpoint{
+			Address:        state.PublicIP,
+			Port:           state.Reality.Port,
+			ExpectedEgress: state.PublicIP,
+		},
+		VLESS: VPSConfigVLESS{
+			UUID:       client.VLESSUUID,
+			Flow:       "xtls-rprx-vision",
+			Transport:  "tcp",
+			Encryption: "none",
+			TLS: VPSConfigTLS{
+				Enabled:         true,
+				ServerName:      state.Reality.ServerName,
+				UTLSFingerprint: "chrome",
+				Reality: VPSConfigReality{
+					Enabled:   true,
+					PublicKey: state.Reality.PublicKey,
+					ShortID:   client.RealityShortID,
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(configuration, "", "  ")
+	return string(append(data, '\n'))
+}
+
 func (m *Manager) ClashConfig(client Client) string {
 	state := m.State()
 	var b bytes.Buffer

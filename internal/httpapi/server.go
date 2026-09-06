@@ -40,6 +40,7 @@ func New(manager *gateway.Manager, user, pass, version string) http.Handler {
 	mux.Handle("GET /api/clients/{id}/vless.txt", s.auth(http.HandlerFunc(s.vlessURI)))
 	mux.Handle("GET /api/clients/{id}/vless.png", s.auth(http.HandlerFunc(s.vlessQR)))
 	mux.Handle("GET /api/clients/{id}/clash.yaml", s.auth(http.HandlerFunc(s.clashConfig)))
+	mux.Handle("GET /api/clients/{id}/vps-config.json", s.auth(http.HandlerFunc(s.vpsConfig)))
 	mux.Handle("/", s.auth(s.staticHandler()))
 	return securityHeaders(mux)
 }
@@ -135,6 +136,10 @@ func (s *Server) vlessQR(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) clashConfig(w http.ResponseWriter, r *http.Request) {
 	s.serveClientText(w, r, "application/yaml; charset=utf-8", "-clash.yaml", s.manager.ClashConfig)
+}
+
+func (s *Server) vpsConfig(w http.ResponseWriter, r *http.Request) {
+	s.serveClientText(w, r, "application/json; charset=utf-8", ".vps-config.json", s.manager.VPSConfig)
 }
 
 func (s *Server) serveClientText(w http.ResponseWriter, r *http.Request, contentType, suffix string, render func(gateway.Client) string) {

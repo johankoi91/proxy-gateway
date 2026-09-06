@@ -1,4 +1,4 @@
-package guard
+package controller
 
 import (
 	"encoding/json"
@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"lightnode-mac-guard/internal/config"
-	"lightnode-mac-guard/internal/model"
+	"lightnode-mac-controller/internal/config"
+	"lightnode-mac-controller/internal/model"
 )
 
 type sanitizedDNSServer struct {
@@ -71,9 +71,9 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 		"/Library/LaunchDaemons/com.lightnode.sing-box.plist",
 		"/usr/local/libexec/sing-box", []string{"run", "-c", cfg.SingBoxConfigFile}, cfg.ProviderLaunchDaemonLabel,
 	)
-	guardExecutable, guardArguments, guardLabel := launchdCommand(
-		"/Library/LaunchDaemons/com.lightnode.vless-guard.plist",
-		"/usr/local/libexec/lightnode-guard", []string{"-config", "/Library/Application Support/LightNodeGuard/config.json"}, cfg.LaunchDaemonLabel,
+	controllerExecutable, controllerArguments, controllerLabel := launchdCommand(
+		"/Library/LaunchDaemons/com.lightnode.controller.plist",
+		"/usr/local/libexec/lightnode-controller", []string{"-config", "/Library/Application Support/LightNodeController/config.json"}, cfg.LaunchDaemonLabel,
 	)
 	tun := firstTunInbound(singBox, cfg)
 	dns := firstDNSServer(singBox)
@@ -85,8 +85,9 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 			Settings: settings(
 				"主配置", cfg.PFMainConfigFile, "Anchor", cfg.PFAnchor, "Anchor 文件", cfg.PFAnchorFile,
 				"Endpoint 白名单", fmt.Sprintf("%s:%d/tcp", cfg.VPSAddress, cfg.VPSPort), "提交标记", cfg.FirewallCommittedFile,
+				"开机引导", "com.lightnode.pf-bootstrap",
 			),
-			HealthComponentIDs: []string{"firewall", "firewall_config", "firewall_binding"},
+			HealthComponentIDs: []string{"firewall", "firewall_config", "firewall_binding", "pf_bootstrap_service"},
 		},
 		{
 			ID: "tunnel", Name: "TUN", Owner: "sing-box inbound",
@@ -120,25 +121,25 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 			HealthComponentIDs: []string{"transport", "egress"},
 		},
 		{
-			ID: "guard", Name: "LightNode Guard", Owner: "launchd", LaunchdLabel: guardLabel,
-			Executable: guardExecutable, Arguments: guardArguments,
+			ID: "controller", Name: "LightNode Controller", Owner: "launchd", LaunchdLabel: controllerLabel,
+			Executable: controllerExecutable, Arguments: controllerArguments,
 			Settings: settings(
 				"监听", cfg.ListenAddress, "完整检查", fmt.Sprintf("%ds", cfg.CheckIntervalSeconds),
-				"冲突巡检", fmt.Sprintf("%ds", cfg.ConflictCheckIntervalSeconds), "连接观测", fmt.Sprintf("%s / %ds", cfg.V2ClashAPIURL, cfg.V2PollIntervalSeconds),
+				"冲突巡检", fmt.Sprintf("%ds", cfg.ConflictCheckIntervalSeconds), "连接观测", fmt.Sprintf("%s / %ds", cfg.ConnectionAPIURL, cfg.ConnectionPollIntervalSeconds),
+				"配置备份", fmt.Sprintf("%s / %d份", cfg.BackupDir, cfg.BackupLimit), "日志轮转", fmt.Sprintf("%d bytes / %d份", cfg.LogMaxBytes, cfg.LogBackupCount),
 			),
-			HealthComponentIDs: []string{"guard_service"},
+			HealthComponentIDs: []string{"controller_service"},
 		},
 	}
 	return model.RuntimeConfiguration{
-		Profile: "global_japan", Transport: "VLESS Reality / TCP",
 		VPSAddress: cfg.VPSAddress, VPSPort: cfg.VPSPort, ExpectedEgress: cfg.ExpectedEgressIP,
 		TunnelAddress: cfg.TunnelAddress, TunnelInterfacePrefix: cfg.TunnelInterfacePrefix,
 		ExpectedDNSServers: append([]string(nil), cfg.ExpectedDNSServers...),
 		PFAnchor:           cfg.PFAnchor, PFAnchorFile: cfg.PFAnchorFile, PFMainConfigFile: cfg.PFMainConfigFile,
-		GuardService: cfg.LaunchDaemonLabel, ProviderService: cfg.ProviderLaunchDaemonLabel,
+		ControllerService: cfg.LaunchDaemonLabel, ProviderService: cfg.ProviderLaunchDaemonLabel,
 		ListenAddress: cfg.ListenAddress, AuthenticationEnabled: !cfg.DisableAuthentication,
 		CheckIntervalSeconds: cfg.CheckIntervalSeconds, ConflictCheckIntervalSeconds: cfg.ConflictCheckIntervalSeconds,
-		ObserverURL: cfg.V2ClashAPIURL, ObserverIntervalSeconds: cfg.V2PollIntervalSeconds,
+		ObserverURL: cfg.ConnectionAPIURL, ObserverIntervalSeconds: cfg.ConnectionPollIntervalSeconds,
 		Components: components,
 	}
 }
@@ -165,7 +166,7 @@ func firstDNSServer(value sanitizedSingBox) (server sanitizedDNSServer) {
 	if len(value.DNS.Servers) > 0 {
 		return value.DNS.Servers[0]
 	}
-	server.Type, server.Tag, server.Server, server.ServerPort, server.Path, server.Detour = "https", "dns-ai", "104.16.249.249", 443, "/dns-query", "tokyo"
+	server.Type, server.Tag, server.Server, server.ServerPort, server.Path, server.Detour = "https", "dns-tunnel", "104.16.249.249", 443, "/dns-query", "tokyo"
 	server.TLS.ServerName = "cloudflare-dns.com"
 	return server
 }

@@ -78,7 +78,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; }
 .config-meta div { padding: 13px 0; border-bottom: 1px solid #dce2de; }
 .config-meta span { display: block; color: #7a857f; font-size: 11px; margin-bottom: 5px; }
 .config-meta code { font-size: 12px; overflow-wrap: anywhere; }
-.modal-actions { padding: 14px 20px 18px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid #e1e6e3; }
+.modal-actions { padding: 14px 20px 18px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; border-top: 1px solid #e1e6e3; }
 .field-label { display: block; margin: 20px 20px 7px; color: #59655e; font-size: 12px; font-weight: 700; }
 .modal input { width: calc(100% - 40px); height: 42px; margin: 0 20px; padding: 0 11px; border: 1px solid #bdc7c1; border-radius: 5px; outline: none; }
 .modal input:focus { border-color: #267a55; box-shadow: 0 0 0 3px #e3f1e9; }

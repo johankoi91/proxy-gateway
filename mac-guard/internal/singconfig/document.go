@@ -18,10 +18,16 @@ func VLESSOutbound(document map[string]any) (map[string]any, error) {
 func EnforceGlobalTokyo(document map[string]any) error {
 	if dns, ok := document["dns"].(map[string]any); ok {
 		if servers, ok := dns["servers"].([]any); ok {
-			for _, rawServer := range servers {
+			for index, rawServer := range servers {
 				if server, ok := rawServer.(map[string]any); ok {
 					server["detour"] = "tokyo"
+					if index == 0 {
+						server["tag"] = "dns-tunnel"
+					}
 				}
+			}
+			if len(servers) > 0 {
+				dns["final"] = "dns-tunnel"
 			}
 		}
 	}
@@ -30,28 +36,15 @@ func EnforceGlobalTokyo(document map[string]any) error {
 		return err
 	}
 	outbound["tag"] = "tokyo"
+	document["outbounds"] = []any{outbound}
 	route, ok := document["route"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("sing-box route is missing")
 	}
 	route["final"] = "tokyo"
-	if rules, ok := route["rules"].([]any); ok {
-		filtered := make([]any, 0, len(rules))
-		for _, rawRule := range rules {
-			rule, ok := rawRule.(map[string]any)
-			if !ok {
-				filtered = append(filtered, rawRule)
-				continue
-			}
-			if _, processRule := rule["process_path_regex"]; processRule {
-				continue
-			}
-			if _, domainRule := rule["domain_suffix"]; domainRule {
-				continue
-			}
-			filtered = append(filtered, rule)
-		}
-		route["rules"] = filtered
+	route["rules"] = []any{
+		map[string]any{"protocol": "dns", "action": "hijack-dns"},
+		map[string]any{"inbound": []any{"tun-in"}, "action": "sniff"},
 	}
 	return nil
 }

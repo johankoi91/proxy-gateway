@@ -6,7 +6,7 @@
   <string>com.lightnode.vless-killswitch-rollback</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/libexec/lightnode-guard</string>
+    <string>/usr/local/libexec/lightnode-controller</string>
     <string>firewall</string>
     <string>rollback</string>
     <string>{{ROLLBACK_TOKEN}}</string>
@@ -15,8 +15,8 @@
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Library/Logs/LightNodeGuard/pf-rollback.log</string>
+  <string>/Library/Logs/LightNodeController/pf-rollback.log</string>
   <key>StandardErrorPath</key>
-  <string>/Library/Logs/LightNodeGuard/pf-rollback.error.log</string>
+  <string>/Library/Logs/LightNodeController/pf-rollback.error.log</string>
 </dict>
 </plist>

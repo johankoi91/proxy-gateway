@@ -192,6 +192,7 @@ function ConfigDialog({ client, mode, onMode, onClose }: { client: Client; mode:
   const qr = mode === "wireguard" ? `${base}/wireguard.png` : `${base}/vless.png`;
   const config = mode === "wireguard" ? `${base}/wireguard.conf` : `${base}/vless.txt`;
   const clash = `${base}/clash.yaml`;
+  const vpsConfig = `${base}/vps-config.json`;
 
   async function copyConfig() {
     await navigator.clipboard.writeText(await api.text(config));
@@ -220,6 +221,7 @@ function ConfigDialog({ client, mode, onMode, onClose }: { client: Client; mode:
         <footer className="modal-actions">
           <button className="secondary-button" onClick={() => void copyConfig()}>{copied ? <Check size={17} /> : <Clipboard size={17} />}{copied ? "已复制" : "复制配置"}</button>
           {mode === "vless" && <a className="secondary-button" href={clash} download><Download size={17} />Clash YAML</a>}
+          {mode === "vless" && <a className="secondary-button" href={vpsConfig} download><Download size={17} />VPS 配置</a>}
           <a className="primary-button" href={config} download><Download size={17} />下载配置</a>
         </footer>
       </section>

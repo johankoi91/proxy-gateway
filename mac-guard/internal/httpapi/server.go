@@ -8,22 +8,22 @@ import (
 	"net/http"
 	"strings"
 
-	"lightnode-mac-guard/internal/guard"
-	"lightnode-mac-guard/internal/model"
+	"lightnode-mac-controller/internal/controller"
+	"lightnode-mac-controller/internal/model"
 )
 
 //go:embed static/* static/assets/*
 var embedded embed.FS
 
 type Server struct {
-	controller  *guard.Controller
+	controller  *controller.Controller
 	user        string
 	password    string
 	disableAuth bool
 	static      http.Handler
 }
 
-func New(controller *guard.Controller, user, password string, disableAuth bool) http.Handler {
+func New(controller *controller.Controller, user, password string, disableAuth bool) http.Handler {
 	staticFS, _ := fs.Sub(embedded, "static")
 	s := &Server{controller: controller, user: user, password: password, disableAuth: disableAuth, static: http.FileServer(http.FS(staticFS))}
 	mux := http.NewServeMux()
@@ -33,19 +33,66 @@ func New(controller *guard.Controller, user, password string, disableAuth bool) 
 	mux.HandleFunc("/api/actions/restart", s.auth(method(http.MethodPost, s.restart)))
 	mux.HandleFunc("/api/actions/start", s.auth(method(http.MethodPost, s.start)))
 	mux.HandleFunc("/api/actions/pause", s.auth(method(http.MethodPost, s.pause)))
-	mux.HandleFunc("/api/v2/policy", s.auth(method(http.MethodGet, s.policyV2)))
 	mux.HandleFunc("/api/node", s.auth(s.node))
+	mux.HandleFunc("/api/node/import", s.auth(method(http.MethodPost, s.importNode)))
+	mux.HandleFunc("/api/backups", s.auth(s.backups))
+	mux.HandleFunc("/api/backups/", s.auth(method(http.MethodPost, s.restoreBackup)))
 	mux.HandleFunc("/", s.auth(s.frontend))
 	return securityHeaders(sameOriginWrites(mux))
 }
 
-func (s *Server) policyV2(w http.ResponseWriter, _ *http.Request) {
-	snapshot, err := s.controller.PolicySnapshot()
-	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+func (s *Server) importNode(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var document model.VPSConfig
+	if err := decoder.Decode(&document); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid VPS configuration: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, snapshot)
+	configuration, err := s.controller.ImportVPSConfig(r.Context(), document)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, configuration)
+}
+
+func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		backups, err := s.controller.ListBackups()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, backups)
+	case http.MethodPost:
+		backup, err := s.controller.CreateBackup("manual")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, backup)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/backups/")
+	id, ok := strings.CutSuffix(suffix, "/restore")
+	if !ok || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	configuration, err := s.controller.RestoreBackup(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, configuration)
 }
 
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +199,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		userOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.user)) == 1
 		passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(s.password)) == 1
 		if !ok || !userOK || !passOK {
-			w.Header().Set("WWW-Authenticate", `Basic realm="LightNode Guard"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="LightNode Controller"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

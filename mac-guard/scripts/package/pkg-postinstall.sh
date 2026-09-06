@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /usr/local/libexec/lightnode-guard install postinstall
+exec /usr/local/libexec/lightnode-controller install postinstall

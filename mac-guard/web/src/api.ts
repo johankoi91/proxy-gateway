@@ -1,4 +1,4 @@
-import type { NodeConfiguration, NodeUpdate, Snapshot } from "./types";
+import type { BackupMetadata, NodeConfiguration, NodeUpdate, Snapshot } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, cache: "no-store" });
@@ -20,5 +20,13 @@ export const api = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(configuration)
-  })
+  }),
+  importNode: (configuration: unknown) => request<NodeConfiguration>("/api/node/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(configuration)
+  }),
+  backups: () => request<BackupMetadata[]>("/api/backups"),
+  createBackup: () => request<BackupMetadata>("/api/backups", { method: "POST" }),
+  restoreBackup: (id: string) => request<NodeConfiguration>(`/api/backups/${encodeURIComponent(id)}/restore`, { method: "POST" })
 };

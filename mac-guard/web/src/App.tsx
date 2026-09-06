@@ -1,21 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, AlertTriangle, BrainCircuit, CheckCircle2, ChevronRight,
+  Activity, AlertTriangle, Archive, BrainCircuit, CheckCircle2, ChevronRight,
   CircleHelp, Database, FileClock, Globe2, House, Network, Play,
   Power, PowerOff, RefreshCw, RotateCcw, Route, Save, Server, Shield, ShieldCheck, Stethoscope,
-  Settings2, Wifi, XCircle
+  Settings2, Upload, Wifi, XCircle
 } from "lucide-react";
 import { api } from "./api";
 import type {
-  ComponentStatus, GuardState, Health,
-  NodeConfiguration, NodeUpdate, PolicyV2Snapshot, RuntimeComponentConfiguration, Snapshot, Stage, TestResult
+  BackupMetadata, ComponentStatus, ControllerState, Health,
+  ConnectionObservation, NodeConfiguration, NodeUpdate, RuntimeComponentConfiguration, Snapshot, Stage, TestResult
 } from "./types";
 
 type View = "overview" | "connections" | "diagnostics" | "node" | "events";
 
-const stateLabels: Record<GuardState, { label: string; detail: string }> = {
+const stateLabels: Record<ControllerState, { label: string; detail: string }> = {
   boot_locked: { label: "正在启动", detail: "等待首轮网络检查" },
-  tunnel_connecting: { label: "正在连接", detail: "正在建立东京线路" },
   healthy: { label: "网络保护正常", detail: "出口与防泄漏策略均符合预期" },
   degraded_locked: { label: "已安全断网", detail: "线路异常，Kill Switch 正在阻止本地回落" },
   unprotected: { label: "尚未启用断网保护", detail: "当前线路可用，但断线时仍可能回落到本地网络" },
@@ -31,15 +30,15 @@ const stageIcons: Record<string, React.ReactNode> = {
 };
 
 const componentGroups = [
-  { id: "network", name: "网络边界与防回落", componentIDs: ["network_conflict", "firewall", "firewall_config", "firewall_binding"] },
-  { id: "tunnel", name: "TUN 与核心服务", componentIDs: ["tunnel", "provider", "provider_service", "config", "guard_service"] },
+  { id: "network", name: "网络边界与防回落", componentIDs: ["network_conflict", "firewall", "firewall_config", "firewall_binding", "pf_bootstrap_service"] },
+  { id: "tunnel", name: "TUN 与核心服务", componentIDs: ["tunnel", "provider", "provider_service", "config", "controller_service"] },
   { id: "dns", name: "DNS 与 IPv6", componentIDs: ["dns", "ipv6"] },
   { id: "egress", name: "东京传输与出口", componentIDs: ["transport", "egress"] }
 ];
 
 const runtimeConfigIcons: Record<string, React.ReactNode> = {
   firewall: <Shield size={18} />, tunnel: <Route size={18} />, "sing-box": <Network size={18} />,
-  dns: <Database size={18} />, outbound: <Globe2 size={18} />, guard: <Stethoscope size={18} />
+  dns: <Database size={18} />, outbound: <Globe2 size={18} />, controller: <Stethoscope size={18} />
 };
 
 export default function App() {
@@ -124,9 +123,9 @@ export default function App() {
   }
 
   return (
-    <div className="guard-shell">
+    <div className="controller-shell">
       <header className="topbar">
-        <div className="brand"><Shield size={21} /><span>LightNode Guard</span><small>V2</small></div>
+        <div className="brand"><Shield size={21} /><span>LightNode Controller</span></div>
         <div className="toolbar">
           <button className="icon-button" onClick={() => void load()} title="刷新状态" aria-label="刷新状态"><RefreshCw size={18} className={busy === "refresh" ? "spin" : ""} /></button>
           <button className="tool-button" onClick={() => void runTests()} disabled={Boolean(busy)}><Play size={16} />运行检查</button>
@@ -140,7 +139,7 @@ export default function App() {
       <nav className="app-tabs" aria-label="后台页面">
         <div className="page-width tab-row">
           <Tab active={view === "overview"} onClick={() => setView("overview")} icon={<House size={17} />} label="总览" />
-          <Tab active={view === "connections"} onClick={() => setView("connections")} icon={<BrainCircuit size={17} />} label="连接观察" badge={snapshot?.policyV2?.violationCount} />
+          <Tab active={view === "connections"} onClick={() => setView("connections")} icon={<BrainCircuit size={17} />} label="连接观察" badge={snapshot?.connections?.violationCount} />
           <Tab active={view === "diagnostics"} onClick={() => setView("diagnostics")} icon={<Stethoscope size={17} />} label="系统检查" badge={abnormalCount} />
           <Tab active={view === "node"} onClick={() => setView("node")} icon={<Server size={17} />} label="节点配置" />
           <Tab active={view === "events"} onClick={() => setView("events")} icon={<FileClock size={17} />} label="事件记录" />
@@ -150,7 +149,7 @@ export default function App() {
       <main>
         {error && <div className="page-width error-banner"><XCircle size={18} />{error}</div>}
         {view === "overview" && <Overview snapshot={snapshot} headline={headline} abnormalCount={abnormalCount} onNavigate={setView} />}
-        {view === "connections" && <div className="page-width view-content">{snapshot?.policyV2 ? <PolicyView policy={snapshot.policyV2} /> : <Unavailable title="V2 连接观察未启用" />}</div>}
+        {view === "connections" && <div className="page-width view-content">{snapshot ? <ConnectionView observation={snapshot.connections} /> : <Unavailable title="连接观察尚未就绪" />}</div>}
         {view === "diagnostics" && <Diagnostics snapshot={snapshot} />}
         {view === "node" && <NodeSettings />}
         {view === "events" && <Events snapshot={snapshot} />}
@@ -169,7 +168,7 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
   abnormalCount: number;
   onNavigate: (view: View) => void;
 }) {
-  const policy = snapshot?.policyV2;
+  const connections = snapshot?.connections;
   const tone = snapshot?.state === "healthy" ? "healthy" : snapshot?.state === "degraded_locked" ? "degraded" : "warning";
   const pf = component(snapshot, "firewall");
   const dns = component(snapshot, "dns");
@@ -181,10 +180,10 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
           <span className="eyebrow">当前状态</span>
           <div className="state-title"><StateIcon state={snapshot?.state} /><h1 className="status-headline">{headline.label}</h1></div>
           <p>{headline.detail}</p>
-          <div className="mode-line"><span>{policy?.mode === "enforce" ? "严格执行" : "策略未加载"}</span><small>更新于 {formatTime(snapshot?.lastCheckAt || "")}</small></div>
+          <div className="mode-line"><span>整机东京 · 严格执行</span><small>更新于 {formatTime(snapshot?.lastCheckAt || "")}</small></div>
         </div>
         <div className="health-grid">
-          <HealthItem icon={<Globe2 size={18} />} label="东京出口" value={snapshot?.observedEgress || "不可用"} health={snapshot?.observedEgress === snapshot?.expectedEgress ? "healthy" : "failed"} />
+          <HealthItem icon={<Globe2 size={18} />} label="东京出口" value={snapshot?.observedEgress || "不可用"} health={snapshot?.observedEgress && snapshot.observedEgress === snapshot.expectedEgress ? "healthy" : "failed"} />
           <HealthItem icon={<Route size={18} />} label="TUN 隧道" value={snapshot?.tunnelInterface || "未建立"} health={tunnel?.health || "unknown"} />
           <HealthItem icon={<Database size={18} />} label="DNS" value={dns?.health === "healthy" ? "经隧道" : "异常"} health={dns?.health || "unknown"} />
           <HealthItem icon={<Shield size={18} />} label="断网保护" value={snapshot?.protected ? "已启用" : "未启用"} health={pf?.health || "unknown"} />
@@ -192,9 +191,9 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
         <div className="runtime-panel">
           <div className="runtime-panel-head"><Activity size={17} /><strong>运行概况</strong></div>
           <div className="runtime-mini-grid">
-            <RuntimeFact label="连接观测" value={policy?.observerHealth === "healthy" ? "在线" : "未连接"} health={policy?.observerHealth || "unknown"} />
-            <RuntimeFact label="活动连接" value={`${policy?.activeConnections.length || 0} 条`} />
-            <RuntimeFact label="策略违例" value={`${policy?.violationCount || 0} 条`} health={policy?.violationCount ? "failed" : "healthy"} />
+            <RuntimeFact label="连接观测" value={connections?.health === "healthy" ? "在线" : "未连接"} health={connections?.health || "unknown"} />
+            <RuntimeFact label="活动连接" value={`${connections?.activeConnections.length || 0} 条`} />
+            <RuntimeFact label="出口违例" value={`${connections?.violationCount || 0} 条`} health={connections?.violationCount ? "failed" : "healthy"} />
             <RuntimeFact label="异常组件" value={`${abnormalCount} 项`} health={abnormalCount ? "failed" : "healthy"} />
           </div>
         </div>
@@ -205,14 +204,20 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
       <section>
         <SectionTitle icon={<Route size={19} />} title="流量去向" meta="全机统一策略" />
         <div className="route-board route-board-one">
-          <TrafficRoute icon={<Globe2 size={20} />} name="整机全部公网流量" now="东京 VPS 149.104.78.121" target="唯一出口，无其他分类或回退" health="healthy" />
+          <TrafficRoute
+            icon={<Globe2 size={20} />}
+            name="整机全部公网流量"
+            now={snapshot?.connected ? `东京 VPS ${snapshot.observedEgress}` : "东京线路不可用"}
+            target={`唯一出口 ${snapshot?.runtimeConfig.vpsAddress || "未配置"}，无其他分类或回退`}
+            health={snapshot?.connected ? "healthy" : snapshot?.protected ? "degraded" : "failed"}
+          />
         </div>
       </section>
 
       <section>
         <SectionTitle icon={<AlertTriangle size={19} />} title="需要关注" meta={`${snapshot?.alerts.length || 0} 项`} />
         {snapshot?.alerts.length ? <div className="attention-list">{snapshot.alerts.slice(0, 4).map((alert) =>
-          <button className={`attention-row severity-${alert.severity}`} key={alert.id} onClick={() => onNavigate(alert.component === "policy_v2" ? "connections" : "diagnostics")}>
+          <button className={`attention-row severity-${alert.severity}`} key={alert.id} onClick={() => onNavigate(alert.component === "connection_observer" ? "connections" : "diagnostics")}>
             <AlertTriangle size={17} /><span><strong>{friendlyTitle(alert.title)}</strong><small>{friendlyMessage(alert.message)}</small></span><ChevronRight size={17} />
           </button>
         )}</div> : <div className="all-clear"><CheckCircle2 size={20} /><span>当前没有需要处理的问题</span></div>}
@@ -222,24 +227,24 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
   </>;
 }
 
-function PolicyView({ policy }: { policy: PolicyV2Snapshot }) {
-  return <section className="policy-workbench">
-    <ViewTitle icon={<BrainCircuit size={22} />} title="连接观察" detail={`整机日本 · ${policy.observerMessage}`} health={policy.observerHealth} />
-    <div className="policy-summary">
-      <Fact label="活动连接" value={String(policy.activeConnections.length)} />
-      <Fact label="路由模式" value="整机日本" health="healthy" />
-      <Fact label="策略违例" value={String(policy.violationCount)} health={policy.violationCount ? "failed" : "healthy"} />
-      <Fact label="最后采集" value={formatTime(policy.lastSuccessfulPollAt || "")} />
+function ConnectionView({ observation }: { observation: ConnectionObservation }) {
+  return <section className="connection-workbench">
+    <ViewTitle icon={<BrainCircuit size={22} />} title="连接观察" detail={`整机东京 · ${observation.message}`} health={observation.health} />
+    <div className="connection-summary">
+      <Fact label="活动连接" value={String(observation.activeConnections.length)} />
+      <Fact label="路由模式" value="整机东京" health="healthy" />
+      <Fact label="出口违例" value={String(observation.violationCount)} health={observation.violationCount ? "failed" : "healthy"} />
+      <Fact label="最后采集" value={formatTime(observation.lastSuccessfulPollAt || "")} />
     </div>
-    <div className="connection-table-heading"><span>实时连接</span><b>{policy.activeConnections.length}</b></div>
-    <div className="policy-table-wrap"><table className="policy-table active-policy-table">
+    <div className="connection-table-heading"><span>实时连接</span><b>{observation.activeConnections.length}</b></div>
+    <div className="connection-table-wrap"><table className="connection-table active-connection-table">
       <thead><tr><th>进程</th><th>目标</th><th>实际出站</th><th>结果</th><th>流量</th></tr></thead>
-      <tbody>{policy.activeConnections.slice(0, 100).map((connection) => <tr key={connection.id}>
+      <tbody>{observation.activeConnections.slice(0, 100).map((connection) => <tr key={connection.id}>
         <td><strong>{processName(connection.processPath)}</strong><code>{connection.processPath || "unknown"}</code></td>
         <td><strong>{connection.host || connection.destinationIp || "unknown"}</strong><code>{connection.network}/{connection.destinationPort}</code></td>
         <td><code>{connection.observedOutbound || "-"}</code></td>
         <td><HealthBadge health={connection.compliant ? "healthy" : "failed"} /></td><td>{formatBytes(connection.upload + connection.download)}</td>
-      </tr>)}{!policy.activeConnections.length && <tr><td colSpan={5} className="empty">当前没有活动连接</td></tr>}</tbody>
+      </tr>)}{!observation.activeConnections.length && <tr><td colSpan={5} className="empty">当前没有活动连接</td></tr>}</tbody>
     </table></div>
   </section>;
 }
@@ -257,7 +262,7 @@ function Diagnostics({ snapshot }: { snapshot: Snapshot | null }) {
       <div className="runtime-component-list">{(runtime?.components || []).map((configuration) => <RuntimeConfigRow configuration={configuration} snapshot={snapshot} key={configuration.id} />)}{!runtime?.components.length && <div className="empty">等待读取配置</div>}</div>
     </section>
     <section>
-      <SectionTitle icon={<Activity size={19} />} title="组件状态" meta={`${snapshot?.components.length || 0} 项 · 4 类`} />
+      <SectionTitle icon={<Activity size={19} />} title="组件状态" meta={`${snapshot?.components.length || 0} 项 · ${componentGroups.length} 类`} />
       <div className="component-groups">{componentGroups.map((group) => {
         const items = (snapshot?.components || []).filter((item) => group.componentIDs.includes(item.id));
         return <div className="component-group" data-group={group.id} key={group.id}><div className="component-group-head"><span className={`group-icon health-${groupHealth(items)}`}>{stageIcons[group.id]}</span><div><strong>{group.name}</strong><small>{items.length} 项</small></div><HealthBadge health={groupHealth(items)} /></div><div className="component-list">{items.map((item) => <ComponentListRow component={item} key={item.id} />)}{!items.length && <div className="empty component-empty">等待检查</div>}</div></div>;
@@ -277,15 +282,18 @@ const emptyNodeForm: NodeUpdate = {
 
 function NodeSettings() {
   const [configuration, setConfiguration] = useState<NodeConfiguration | null>(null);
+  const [backups, setBackups] = useState<BackupMetadata[]>([]);
   const [form, setForm] = useState<NodeUpdate>(emptyNodeForm);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const loadNode = useCallback(async () => {
     try {
-      const current = await api.node();
+      const [current, availableBackups] = await Promise.all([api.node(), api.backups()]);
       setConfiguration(current);
+      setBackups(availableBackups);
       setForm({
         server: current.server, port: current.port, expectedEgress: current.expectedEgress,
         flow: current.flow, tlsServerName: current.tlsServerName, utlsFingerprint: current.utlsFingerprint,
@@ -301,6 +309,72 @@ function NodeSettings() {
 
   function update<K extends keyof NodeUpdate>(key: K, value: NodeUpdate[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function importConfiguration(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setError("");
+    setMessage("");
+    try {
+      if (file.size > 32 * 1024) throw new Error("VPS 配置文件超过 32 KB");
+      const document = JSON.parse(await file.text()) as { schema?: string; version?: number; client?: { name?: string }; endpoint?: { address?: string; port?: number } };
+      if (document.schema !== "lightnode.vps-config" || document.version !== 1) throw new Error("VPS 配置格式或版本不受支持");
+      const target = `${document.endpoint?.address || "未知地址"}:${document.endpoint?.port || "-"}`;
+      if (!window.confirm(`导入${document.client?.name ? `客户端“${document.client.name}”的` : ""}配置并切换到 ${target}？系统会先创建安全备份。`)) return;
+      setBusy(true);
+      const current = await api.importNode(document);
+      setConfiguration(current);
+      setForm({
+        server: current.server, port: current.port, expectedEgress: current.expectedEgress,
+        flow: current.flow, tlsServerName: current.tlsServerName, utlsFingerprint: current.utlsFingerprint,
+        uuid: "", realityPublicKey: "", realityShortId: ""
+      });
+      setBackups(await api.backups());
+      setMessage(`配置已导入并切换：${current.server}:${current.port}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "VPS 配置导入失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createBackup() {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const backup = await api.createBackup();
+      setBackups(await api.backups());
+      setMessage(`已创建配置备份：${formatDateTime(backup.createdAt)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "配置备份失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restoreBackup(backup: BackupMetadata) {
+    if (!window.confirm(`恢复 ${formatDateTime(backup.createdAt)} 的配置？恢复前会再次创建安全备份。`)) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const current = await api.restoreBackup(backup.id);
+      setConfiguration(current);
+      setForm({
+        server: current.server, port: current.port, expectedEgress: current.expectedEgress,
+        flow: current.flow, tlsServerName: current.tlsServerName, utlsFingerprint: current.utlsFingerprint,
+        uuid: "", realityPublicKey: "", realityShortId: ""
+      });
+      setBackups(await api.backups());
+      setMessage(`配置已恢复：${current.server}:${current.port}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "配置恢复失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function save(event: React.FormEvent) {
@@ -325,6 +399,14 @@ function NodeSettings() {
     <ViewTitle icon={<Server size={22} />} title="节点配置" detail={configuration ? `当前 ${configuration.server}:${configuration.port}` : "读取当前节点"} />
     {error && <div className="error-banner"><XCircle size={18} />{error}</div>}
     {message && <div className="success-banner"><CheckCircle2 size={18} />{message}</div>}
+    <section className="node-import-section">
+      <SectionTitle icon={<Upload size={18} />} title="VPS 配置与凭据轮换" meta="lightnode.vps-config · v1" />
+      <div className="node-import-actions">
+        <input ref={fileInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => void importConfiguration(event)} />
+        <button type="button" className="primary-command" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={17} />导入 VPS 配置</button>
+        <button type="button" className="secondary-command" disabled={busy} onClick={() => void createBackup()}><Archive size={17} />立即备份</button>
+      </div>
+    </section>
     <form onSubmit={(event) => void save(event)}>
       <section className="node-form-section">
         <SectionTitle icon={<Globe2 size={18} />} title="服务器与出口" meta="当前东京节点为默认值" />
@@ -347,6 +429,17 @@ function NodeSettings() {
       </section>
       <div className="node-form-actions"><button className="primary-command" type="submit" disabled={busy || !configuration}><Save size={17} />{busy ? "正在验证并切换" : "保存并切换"}</button></div>
     </form>
+    <section className="node-backup-section">
+      <SectionTitle icon={<Archive size={18} />} title="配置备份" meta={`${backups.length} 份 · 仅存于本机`} />
+      <div className="backup-list">
+        {backups.map((backup) => <div className="backup-row" key={backup.id}>
+          <div><strong>{formatDateTime(backup.createdAt)}</strong><small>{backup.reason}</small></div>
+          <code>{backup.server}:{backup.port}</code>
+          <button type="button" className="icon-command" disabled={busy} onClick={() => void restoreBackup(backup)} title="恢复此备份" aria-label={`恢复 ${formatDateTime(backup.createdAt)} 的备份`}><RotateCcw size={17} /></button>
+        </div>)}
+        {!backups.length && <div className="empty">尚无配置备份</div>}
+      </div>
+    </section>
   </div>;
 }
 
@@ -415,7 +508,7 @@ function HealthIcon({ health, size }: { health: Health; size: number }) {
   return <CircleHelp size={size} />;
 }
 
-function StateIcon({ state }: { state?: GuardState }) {
+function StateIcon({ state }: { state?: ControllerState }) {
   if (state === "healthy") return <CheckCircle2 size={30} />;
   if (state === "degraded_locked") return <ShieldCheck size={30} />;
   if (state === "unprotected") return <AlertTriangle size={30} />;

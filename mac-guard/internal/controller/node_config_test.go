@@ -1,15 +1,15 @@
-package guard
+package controller
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"lightnode-mac-guard/internal/model"
+	"lightnode-mac-controller/internal/model"
 )
 
 func TestBuildNodeCandidatesPreservesSecretsAndUpdatesEndpoint(t *testing.T) {
-	guardData := []byte(`{"version":1,"vpsAddress":"149.104.78.121","vpsPort":443,"expectedEgressIp":"149.104.78.121","custom":"keep"}`)
+	configData := []byte(`{"version":1,"vpsAddress":"149.104.78.121","vpsPort":443,"expectedEgressIp":"149.104.78.121","custom":"keep"}`)
 	singData := []byte(`{
   "dns":{"servers":[{"type":"https","detour":"tokyo"}]},
   "outbounds":[{"type":"vless","tag":"tokyo","server":"149.104.78.121","server_port":443,"uuid":"keep-uuid","flow":"xtls-rprx-vision","tls":{"server_name":"old.example.com","reality":{"public_key":"keep-public-key","short_id":"aabbccdd"},"utls":{"fingerprint":"chrome"}}}],
@@ -20,7 +20,7 @@ func TestBuildNodeCandidatesPreservesSecretsAndUpdatesEndpoint(t *testing.T) {
 		Server: "203.0.113.20", Port: 8443, ExpectedEgress: "203.0.113.21",
 		Flow: "xtls-rprx-vision", TLSServerName: "new.example.com", UTLSFingerprint: "safari",
 	}
-	newGuard, newSing, err := buildNodeCandidates(guardData, singData, update)
+	newConfig, newSing, err := buildNodeCandidates(configData, singData, update)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,14 +30,14 @@ func TestBuildNodeCandidatesPreservesSecretsAndUpdatesEndpoint(t *testing.T) {
 			t.Fatalf("candidate lost %q: %s", expected, text)
 		}
 	}
-	var guard map[string]any
-	if err := json.Unmarshal(newGuard, &guard); err != nil {
+	var controllerConfig map[string]any
+	if err := json.Unmarshal(newConfig, &controllerConfig); err != nil {
 		t.Fatal(err)
 	}
-	if guard["custom"] != "keep" || guard["vpsAddress"] != "203.0.113.20" || guard["expectedEgressIp"] != "203.0.113.21" {
-		t.Fatalf("guard candidate = %#v", guard)
+	if controllerConfig["custom"] != "keep" || controllerConfig["vpsAddress"] != "203.0.113.20" || controllerConfig["expectedEgressIp"] != "203.0.113.21" {
+		t.Fatalf("controller config candidate = %#v", controllerConfig)
 	}
-	view, err := nodeConfigurationFromDocuments(newGuard, newSing)
+	view, err := nodeConfigurationFromDocuments(newConfig, newSing)
 	if err != nil {
 		t.Fatal(err)
 	}

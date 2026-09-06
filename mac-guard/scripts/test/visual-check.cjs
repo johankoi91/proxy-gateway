@@ -1,11 +1,11 @@
 const { chromium } = require("playwright");
 
-const baseURL = process.env.GUARD_URL || "http://127.0.0.1:9180";
-const username = process.env.GUARD_USER || "admin";
-const password = process.env.GUARD_PASSWORD || "local-test-password";
-const artifactPrefix = process.env.GUARD_ARTIFACT_PREFIX || "guard";
-const minActiveConnections = Number(process.env.GUARD_MIN_ACTIVE || 5);
-const runTests = process.env.GUARD_RUN_TESTS !== "false";
+const baseURL = process.env.CONTROLLER_URL || "http://127.0.0.1:9180";
+const username = process.env.CONTROLLER_USER || "admin";
+const password = process.env.CONTROLLER_PASSWORD || "local-test-password";
+const artifactPrefix = process.env.CONTROLLER_ARTIFACT_PREFIX || "controller";
+const minActiveConnections = Number(process.env.CONTROLLER_MIN_ACTIVE || 5);
+const runTests = process.env.CONTROLLER_RUN_TESTS !== "false";
 
 async function verify(browser, name, viewport) {
   const context = await browser.newContext({ viewport, httpCredentials: { username, password } });
@@ -25,22 +25,22 @@ async function verify(browser, name, viewport) {
 
   await page.getByRole("button", { name: /连接观察/ }).click();
   await page.getByRole("heading", { name: "连接观察" }).waitFor();
-  const activePolicyRows = await page.locator(".active-policy-table tbody tr").count();
-  if (activePolicyRows < minActiveConnections) throw new Error(`${name}: expected V2 active connections, got ${activePolicyRows}`);
+  const activeConnectionRows = await page.locator(".active-connection-table tbody tr").count();
+  if (activeConnectionRows < minActiveConnections) throw new Error(`${name}: expected active connections, got ${activeConnectionRows}`);
   await assertNoOverflow(page, `${name} connections`);
   await page.screenshot({ path: `artifacts/${name}-connections.png`, fullPage: true });
 
   await page.getByRole("button", { name: /系统检查/ }).click();
   await page.getByRole("heading", { name: "系统检查" }).waitFor();
   if (await page.locator(".verification-list").count() !== 1) throw new Error(`${name}: connection verification list is missing`);
-  if (await page.locator(".verification-surface, .stage-flow").count()) throw new Error(`${name}: legacy verification cards were not removed`);
+  if (await page.locator(".verification-surface, .stage-flow").count()) throw new Error(`${name}: obsolete verification cards are present`);
   if (await page.locator(".evidence-row").count() < 4) throw new Error(`${name}: active test evidence was not merged into connection rows`);
   const stageOrder = await page.locator(".verification-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-stage")));
   if (stageOrder.join(",") !== "network,firewall,tunnel,provider,dns,vps,egress") throw new Error(`${name}: invalid architecture stage order: ${stageOrder}`);
   const configurationOrder = await page.locator(".runtime-component-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-component-config")));
-  if (configurationOrder.join(",") !== "firewall,tunnel,sing-box,dns,outbound,guard") throw new Error(`${name}: invalid component configuration order: ${configurationOrder}`);
+  if (configurationOrder.join(",") !== "firewall,tunnel,sing-box,dns,outbound,controller") throw new Error(`${name}: invalid component configuration order: ${configurationOrder}`);
   const commands = await page.locator(".runtime-command code").allTextContents();
-  if (!commands.some((value) => value.includes("lightnode-guard firewall refresh"))) throw new Error(`${name}: PF startup command is missing`);
+  if (!commands.some((value) => value.includes("lightnode-controller firewall refresh"))) throw new Error(`${name}: PF startup command is missing`);
   if (!commands.some((value) => value.includes("sing-box run -c"))) throw new Error(`${name}: sing-box startup arguments are missing`);
   const componentGroups = await page.locator(".component-group").count();
   if (componentGroups !== 4) throw new Error(`${name}: expected 4 component groups, got ${componentGroups}`);
@@ -65,6 +65,8 @@ async function verify(browser, name, viewport) {
   const secretValues = await page.locator(".node-secret-grid input").evaluateAll((inputs) => inputs.map((input) => input.value));
   if (secretValues.length !== 3 || secretValues.some(Boolean)) throw new Error(`${name}: secret values were returned to the browser`);
   if (await page.locator(".node-secret-grid .configured").count() !== 3) throw new Error(`${name}: secret configured flags are incomplete`);
+  if (await page.getByRole("button", { name: "导入 VPS 配置" }).count() !== 1) throw new Error(`${name}: VPS configuration import is missing`);
+  if (await page.getByRole("button", { name: "立即备份" }).count() !== 1) throw new Error(`${name}: manual backup is missing`);
   await assertNoOverflow(page, `${name} node configuration`);
   await page.screenshot({ path: `artifacts/${name}-node.png`, fullPage: true });
 

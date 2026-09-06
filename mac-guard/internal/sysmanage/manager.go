@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"lightnode-mac-guard/internal/config"
+	"lightnode-mac-controller/internal/config"
 )
 
 const (
@@ -26,33 +26,38 @@ const (
 	managedEnd   = "# END LIGHTNODE VLESS KILL SWITCH"
 )
 
+var networkServiceHeaderPattern = regexp.MustCompile(`^\([0-9]+\) `)
+
 type Runner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
 }
 
 type Paths struct {
-	AppDir, LogDir, TemplatesDir, DocsDir string
-	Config, SingBoxConfig, Policy         string
-	Paused, Committed, RollbackState      string
-	PFConfig, PFAnchor, RollbackPlist     string
-	GuardPlist, SingBoxPlist              string
-	GuardBinary, SingBoxBinary            string
+	AppDir, LogDir, TemplatesDir, DocsDir           string
+	Config, SingBoxConfig                           string
+	Paused, Committed, RollbackState                string
+	PFConfig, PFAnchor, RollbackPlist               string
+	ControllerPlist, SingBoxPlist, PFBootstrapPlist string
+	ControllerBinary, SingBoxBinary                 string
+	RegressionState, RegressionPlist                string
 }
 
 func DefaultPaths() Paths {
-	app := "/Library/Application Support/LightNodeGuard"
+	app := "/Library/Application Support/LightNodeController"
 	return Paths{
-		AppDir: app, LogDir: "/Library/Logs/LightNodeGuard",
-		TemplatesDir: "/usr/local/share/lightnode-guard/templates",
-		DocsDir:      "/usr/local/share/doc/lightnode-guard",
+		AppDir: app, LogDir: "/Library/Logs/LightNodeController",
+		TemplatesDir: "/usr/local/share/lightnode-controller/templates",
+		DocsDir:      "/usr/local/share/doc/lightnode-controller",
 		Config:       filepath.Join(app, "config.json"), SingBoxConfig: filepath.Join(app, "sing-box.json"),
-		Policy: filepath.Join(app, "v2-policy.json"), Paused: filepath.Join(app, "safely-paused"),
-		Committed: filepath.Join(app, "firewall.committed"), RollbackState: filepath.Join(app, "pf-rollback"),
-		PFConfig: "/etc/pf.conf", PFAnchor: "/etc/pf.anchors/com.lightnode.vless-killswitch",
-		RollbackPlist: "/Library/LaunchDaemons/com.lightnode.vless-killswitch-rollback.plist",
-		GuardPlist:    "/Library/LaunchDaemons/com.lightnode.vless-guard.plist",
-		SingBoxPlist:  "/Library/LaunchDaemons/com.lightnode.sing-box.plist",
-		GuardBinary:   "/usr/local/libexec/lightnode-guard", SingBoxBinary: "/usr/local/libexec/sing-box",
+		Paused: filepath.Join(app, "safely-paused"), Committed: filepath.Join(app, "firewall.committed"),
+		RollbackState: filepath.Join(app, "pf-rollback"),
+		PFConfig:      "/etc/pf.conf", PFAnchor: "/etc/pf.anchors/com.lightnode.vless-killswitch",
+		RollbackPlist:    "/Library/LaunchDaemons/com.lightnode.vless-killswitch-rollback.plist",
+		ControllerPlist:  "/Library/LaunchDaemons/com.lightnode.controller.plist",
+		SingBoxPlist:     "/Library/LaunchDaemons/com.lightnode.sing-box.plist",
+		PFBootstrapPlist: "/Library/LaunchDaemons/com.lightnode.pf-bootstrap.plist",
+		ControllerBinary: "/usr/local/libexec/lightnode-controller", SingBoxBinary: "/usr/local/libexec/sing-box",
+		RegressionState: filepath.Join(app, "regression-state.json"), RegressionPlist: "/Library/LaunchDaemons/com.lightnode.regression-recovery.plist",
 	}
 }
 
@@ -101,7 +106,7 @@ func (m *Manager) printf(format string, args ...any) {
 }
 
 func (m *Manager) log(ctx context.Context, message string) {
-	_, _ = m.run(ctx, "/usr/bin/logger", "-t", "lightnode-guard", message)
+	_, _ = m.run(ctx, "/usr/bin/logger", "-t", "lightnode-controller", message)
 }
 
 func fileExists(path string) bool {
@@ -185,7 +190,7 @@ func networkServiceForInterface(output, device string) string {
 	service := ""
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if matched, _ := regexp.MatchString(`^\([0-9]+\) `, trimmed); matched {
+		if networkServiceHeaderPattern.MatchString(trimmed) {
 			if index := strings.Index(trimmed, ") "); index >= 0 {
 				service = strings.TrimPrefix(trimmed[index+2:], "*")
 			}

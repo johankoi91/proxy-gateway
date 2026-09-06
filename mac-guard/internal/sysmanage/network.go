@@ -69,6 +69,26 @@ func (m *Manager) RefreshDNS(ctx context.Context, restore bool) error {
 	return nil
 }
 
+func (m *Manager) DisablePhysicalIPv6(ctx context.Context) error {
+	if err := m.requireRoot(); err != nil {
+		return err
+	}
+	physical, err := m.physicalInterface(ctx)
+	if err != nil {
+		return err
+	}
+	service, err := m.networkService(ctx, physical)
+	if err != nil {
+		return err
+	}
+	if _, err := m.run(ctx, "/usr/sbin/networksetup", "-setv6off", service); err != nil {
+		return err
+	}
+	m.log(ctx, fmt.Sprintf("Disabled physical IPv6 on %s (%s)", service, physical))
+	m.printf("network_service=%s physical_interface=%s ipv6=off\n", service, physical)
+	return nil
+}
+
 func (m *Manager) RemediateConflicts(ctx context.Context) error {
 	if err := m.requireRoot(); err != nil {
 		return err
@@ -152,17 +172,17 @@ func (m *Manager) Notify(ctx context.Context, severity, component, message strin
 		severity = "warning"
 	}
 	if component == "" {
-		component = "guard"
+		component = "controller"
 	}
 	if message == "" {
-		message = "LightNode Guard state changed"
+		message = "LightNode Controller state changed"
 	}
 	m.log(ctx, fmt.Sprintf("[%s] %s: %s", severity, component, message))
 	uid, ok := consoleUID()
 	if !ok {
 		return nil
 	}
-	title := "LightNode Guard: " + component
+	title := "LightNode Controller: " + component
 	message = strings.NewReplacer("\r", " ", "\n", " ").Replace(message)
 	script := fmt.Sprintf("display notification %s with title %s", strconv.Quote(message), strconv.Quote(title))
 	_, _ = m.run(ctx, "/bin/launchctl", "asuser", strconv.FormatUint(uint64(uid), 10), "/usr/bin/osascript", "-e", script)

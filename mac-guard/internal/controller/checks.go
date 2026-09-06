@@ -1,4 +1,4 @@
-package guard
+package controller
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"lightnode-mac-guard/internal/config"
-	"lightnode-mac-guard/internal/model"
+	"lightnode-mac-controller/internal/config"
+	"lightnode-mac-controller/internal/model"
 )
 
 type checkOutput struct {
@@ -50,6 +50,7 @@ func (c *checker) run(ctx context.Context) checkOutput {
 		c.checkPF(ctx, now),
 		c.checkPFPersistence(now),
 		c.checkPFBinding(ctx, now),
+		c.checkPFBootstrapLaunchd(ctx, now),
 		c.checkConfig(now),
 		c.checkLaunchd(ctx, now),
 	}
@@ -65,6 +66,15 @@ func (c *checker) run(ctx context.Context) checkOutput {
 		physicalIF: c.physicalInterface(ctx),
 		tunnelIF:   tunnelInterface(components),
 	}
+}
+
+func (c *checker) checkPFBootstrapLaunchd(ctx context.Context, now time.Time) model.Component {
+	started := time.Now()
+	const label = "com.lightnode.pf-bootstrap"
+	if _, err := c.runner.Run(ctx, "launchctl", "print", "system/"+label); err != nil {
+		return component("pf_bootstrap_service", "开机 PF 引导", model.HealthFailed, true, "开机防泄漏服务未加载", err.Error(), now, started)
+	}
+	return component("pf_bootstrap_service", "开机 PF 引导", model.HealthHealthy, true, "开机防泄漏服务已加载", label, now, started)
 }
 
 func (c *checker) checkNetworkConflict(ctx context.Context, now time.Time) model.Component {
@@ -276,9 +286,9 @@ func (c *checker) checkConfig(now time.Time) model.Component {
 func (c *checker) checkLaunchd(ctx context.Context, now time.Time) model.Component {
 	started := time.Now()
 	if _, err := c.runner.Run(ctx, "launchctl", "print", "system/"+c.cfg.LaunchDaemonLabel); err != nil {
-		return component("guard_service", "Guard launchd", model.HealthFailed, true, "监控守护服务未加载", err.Error(), now, started)
+		return component("controller_service", "Controller launchd", model.HealthFailed, true, "控制服务未加载", err.Error(), now, started)
 	}
-	return component("guard_service", "Guard launchd", model.HealthHealthy, true, "监控守护服务已加载", c.cfg.LaunchDaemonLabel, now, started)
+	return component("controller_service", "Controller launchd", model.HealthHealthy, true, "控制服务已加载", c.cfg.LaunchDaemonLabel, now, started)
 }
 
 func (c *checker) checkProviderLaunchd(ctx context.Context, now time.Time) model.Component {

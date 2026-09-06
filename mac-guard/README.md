@@ -1,7 +1,6 @@
-# LightNode Mac Guard
+# LightNode Mac Controller
 
-> 当前开发版本：`0.2.0-alpha.18`。全局日本策略已在专用虚拟 Mac 上部署；当前
-> 本机未部署并继续保留原有 Clash 环境。
+> 当前候选版本：`0.2.0-alpha.20`。
 
 这是 `proxy-gateway` 下独立开发的 macOS 固定出口工程。目标是把开发 Mac
 的公网流量固定到东京 VPS `149.104.78.121`，并在隧道故障时保持断网，而不是
@@ -23,9 +22,9 @@ Tokyo VPS 149.104.78.121
 
 PF 主规则: quick 放行 TUN、当前管理局域网和 VPS TCP 443
 PF Anchor: 最终阻断其余 IPv4/IPv6 出口
-Go Guard: 检测、自动恢复、事件记录、通知、本机 API
+Go Controller: 检测、自动恢复、配置生命周期、事件、通知、本机 API
 React: 本机状态面板
-launchd: sing-box 与 Guard 开机守护
+launchd: PF 早期引导、sing-box 与 Controller 开机守护
 ```
 
 ## 当前能力
@@ -34,15 +33,15 @@ launchd: sing-box 与 Guard 开机守护
   DNS、IPv6 和配置文件权限。
 - 状态区分 `healthy`、`degraded_locked` 和 `unprotected`。隧道坏但 PF 正常时
   属于故障锁定，不会误报成可用。
-- PF 已确认启用后，Guard 每 30 秒限频自动修复被关闭、清空或因网卡切换而
+- PF 已确认启用后，Controller 每 30 秒限频自动修复被关闭、清空或因网卡切换而
   失效的受控 Anchor；修复不会关闭 Kill Switch。
-- 当前网络服务的 DNS 偏离 `172.19.0.2` 时，Guard 会在 TUN 健康的前提下
+- 当前网络服务的 DNS 偏离 `172.19.0.2` 时，Controller 会在 TUN 健康的前提下
   自动重新设置，避免切换 Wi-Fi/有线网卡后使用本地 DNS。
 - 系统代理、Clash/Mihomo、已连接的系统 VPN 或公网路由不再指向 LightNode TUN
-  时，Guard 将其视为必检冲突并进入故障锁定。
+  时，Controller 将其视为必检冲突并进入故障锁定。
 - 已提交 Kill Switch 后，已知冲突会自动隔离：关闭当前网络服务的系统代理，
   停止 Clash/Mihomo，然后重启 sing-box、恢复 DNS 并重载 PF。已连接的系统 VPN
-  保持锁定告警，避免自动关闭承载 SSH/屏幕共享的管理通道。
+  保持锁定告警，避免自动关闭承载带外管理的通道。
 - 告警写入 JSONL、系统日志，并通过当前图形登录用户的 macOS 通知中心提示。
 - React 面板展示完整连接阶段、每个组件的精确错误、主动告警、测试结果和
   事件时间线。
@@ -51,17 +50,19 @@ launchd: sing-box 与 Guard 开机守护
   验证东京出口，但不会自动打开 AI App。
 - 节点配置页直接读写现有 `config.json` 和 `sing-box.json`，不引入数据库。保存
   前使用 macOS 原生管理员确认并校验候选配置；切换失败时恢复旧节点。
+- 支持导入 VPS 后台生成的 `*.vps-config.json`。导入或手工修改前自动创建 root-only
+  配置备份；后台可创建和恢复备份，最多保留 10 份。
+- 日志达到 5 MiB 后使用 copy-truncate 轮转，默认保留 3 份。
 - 面板只监听 `127.0.0.1:9180`，不对局域网或公网开放。认证可通过
   `disableAuthentication` 控制；当前远程 Mac 按用户要求关闭认证，并保留
   同源写操作校验。
 
-V2 Alpha 已实现的离线开发能力：
+连接观察与后台能力：
 
 - 从 sing-box loopback Clash API 采集活动连接的进程路径、域名/IP、端口、
   命中规则、出站链和流量计数。
-- 唯一的 `global_japan` 档位，整台机器全部公网流量固定日本。
-- Claude/ChatGPT 进程树和 AI 域名双重识别。
-- V2 后台显示活动连接、实际东京出站和违例告警。
+- 整台机器全部公网流量固定到唯一的 `tokyo` 出站。
+- 后台显示活动连接、实际东京出站和违例告警。
 - 后台采用五个任务标签：总览、连接观察、系统检查、节点配置、事件记录。总览只
   显示安全状态、四个关键指标、流量去向和需要关注事项；底层组件不占据首屏。
 - 不再识别或标记 Claude/GPT 流量；所有连接只检查是否经过唯一的 `tokyo`
@@ -70,9 +71,11 @@ V2 Alpha 已实现的离线开发能力：
 
 AppleScript 只允许用于 GUI App 正常退出、macOS 通知，以及用户明确触发的单次
 管理员授权。连接观测、路由、DNS 和 Kill Switch 不依赖 AppleScript；
-完整约束见 V2 设计文档的“AppleScript 使用边界”。
+相关约束见架构文档的“AppleScript 边界”。PF 已在隔离虚拟机完成故障阻断、恢复和
+冲突处理验收。
 
-V2 PF 已在隔离虚拟机完成故障阻断、恢复和冲突处理验收。
+已提交 Kill Switch 后，`com.lightnode.pf-bootstrap` 会在系统启动阶段独立校验、加载
+并启用上一份 fail-closed PF 配置，不依赖 Controller、sing-box、DNS 或用户登录。
 
 ## 安全边界
 
@@ -82,10 +85,9 @@ IPv4/IPv6 出口。TUN 放行使用 `no state`，避免 PF 与用户态 TUN 的�
 状态跟踪。切换 Wi-Fi 或 TUN 接口变化时，旧规则最多造成暂时断网，不会产生
 新网卡直出的窗口。
 
-自动隔离只会停止明确识别的 Clash/Mihomo 和 `scutil --nc` 报告为已连接的系统
-VPN。未知 Network Extension 不会被盲目杀进程，但其非 LightNode TUN 流量会被
-PF 最终阻断，后台持续显示冲突并通知。需要保留其他 VPN 时，应将它作为 V2 的
-sing-box 第二出站接入，而不是同时运行独立 VPN App。
+自动隔离只会停止明确识别的 Clash/Mihomo。未知 Network Extension 和系统 VPN
+不会被盲目杀进程，但其非 LightNode TUN 流量会被 PF 最终阻断，后台持续显示冲突
+并通知。本工程不支持第二 VPN 或第二出站。
 
 配置和日志不得写入控制台、Git 或截图。VLESS UUID、Reality 公钥、short ID
 只保存在权限为 `0600` 的 `sing-box.json` 中。
@@ -113,8 +115,8 @@ make pkg
 本地启动面板：
 
 ```bash
-LIGHTNODE_GUARD_ADMIN_PASSWORD=local-test \
-  ./dist/lightnode-guard-darwin-arm64 \
+LIGHTNODE_CONTROLLER_ADMIN_PASSWORD=local-test \
+  ./dist/lightnode-controller-darwin-arm64 \
   -config packaging/config.example.json
 ```
 
@@ -138,21 +140,21 @@ make pkg
 输出：
 
 ```text
-dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg
+dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg
 ```
 
-安装包内只有 `lightnode-guard`、固定版本 sing-box、launchd 配置、模板和文档。
+安装包内只有 `lightnode-controller`、固定版本 sing-box、launchd 配置、模板和文档。
 目标 Mac 安装时不需要再下载依赖。
 
 原生安装包可双击安装，或使用：
 
 ```bash
-sudo installer -pkg dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg -target /
+sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg -target /
 ```
 
 默认构建为未签名开发包；设置 `PKG_SIGN_IDENTITY` 后，`make pkg` 会使用对应的
-`Developer ID Installer` 证书签名。安装包升级会保留现有 `config.json`、
-`sing-box.json`、`v2-policy.json`、PF 提交状态和安全暂停状态。
+`Developer ID Installer` 证书签名。安装逻辑只管理当前 Controller、sing-box 和 PF
+文件，不包含旧产品迁移或兼容分支。
 
 ## 安装顺序
 
@@ -160,32 +162,33 @@ PKG 新装时只启动管理服务，不会直接启用 PF；配置仍为占位�
 sing-box：
 
 ```bash
-shasum -a 256 -c dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg.sha256
-sudo installer -pkg dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg -target /
+shasum -a 256 -c dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg.sha256
+sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg -target /
 ```
 
 然后：
 
 1. 把真实 VLESS/Reality 参数填入
-   `/Library/Application Support/LightNodeGuard/sing-box.json`。
+   `/Library/Application Support/LightNodeController/sing-box.json`。
 
-2. 执行 `sudo /usr/local/libexec/sing-box check -c '/Library/Application Support/LightNodeGuard/sing-box.json'`。
-3. 执行 `sudo /usr/local/libexec/lightnode-guard tunnel start`。Go 管理器会加载
+2. 执行 `sudo /usr/local/libexec/sing-box check -c '/Library/Application Support/LightNodeController/sing-box.json'`。
+3. 执行 `sudo /usr/local/libexec/lightnode-controller tunnel start`。Go 管理器会加载
    sing-box、设置隧道 DNS，并验证 IPv4 出口为 `149.104.78.121`。
-4. 执行 `sudo /usr/local/libexec/lightnode-guard firewall enable`。Go 管理器动态识别物理
+4. 执行 `sudo /usr/local/libexec/lightnode-controller firewall enable`。Go 管理器动态识别物理
    接口、TUN 和管理网段，并启动默认 180 秒的自动回滚。
-5. 在另一条已建立的 SSH/屏幕共享会话中验证管理连接、DNS、IPv6 和隧道故障
+5. 在另一条已建立的带外管理会话中验证管理连接、DNS、IPv6 和隧道故障
    场景。
-6. 验证完成后执行 `sudo /usr/local/libexec/lightnode-guard firewall confirm`。只有这
-   一步会创建 `firewall.committed` 并启用 Guard 自动修复。
+6. 验证完成后执行 `sudo /usr/local/libexec/lightnode-controller firewall confirm`。只有这
+   一步会创建 `firewall.committed`，启用 Controller 自动修复及后续启动时的 PF
+   早期引导。
 
 未在 180 秒内确认时，launchd 回滚任务会恢复原 `/etc/pf.conf` 和 Anchor。
-不要在只有一条远程连接、没有屏幕共享回退路径时确认规则。
+不要在只有一条远程连接、没有带外回退路径时确认规则。
 
 明确允许本地公网回落时，使用：
 
 ```bash
-sudo /usr/local/libexec/lightnode-guard firewall disable --yes
+sudo /usr/local/libexec/lightnode-controller firewall disable --yes
 ```
 
 卸载器在 Kill Switch 已确认时会拒绝继续，避免先停 sing-box 后把机器留在不可
@@ -199,8 +202,11 @@ sudo /usr/local/libexec/lightnode-guard firewall disable --yes
 - `POST /api/actions/restart`
 - `POST /api/actions/start`
 - `POST /api/actions/pause`
-- `GET /api/v2/policy`
+- `GET|POST /api/node`
+- `GET|POST /api/backups`
+- `POST /api/backups/{id}/restore`
+- `POST /api/node/import`
 
 启用认证时，除 `/healthz` 外均需要本机管理账号认证；关闭认证时仍要求 POST
 请求同源。安全暂停、启动和恢复动作都不会关闭 PF；只有显式执行
-`lightnode-guard firewall disable --yes` 才会允许恢复本地公网。
+`lightnode-controller firewall disable --yes` 才会允许恢复本地公网。

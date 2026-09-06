@@ -13,51 +13,51 @@ import (
 	"syscall"
 	"time"
 
-	"lightnode-mac-guard/internal/config"
-	"lightnode-mac-guard/internal/guard"
-	"lightnode-mac-guard/internal/httpapi"
-	"lightnode-mac-guard/internal/sysmanage"
+	"lightnode-mac-controller/internal/config"
+	"lightnode-mac-controller/internal/controller"
+	"lightnode-mac-controller/internal/httpapi"
+	"lightnode-mac-controller/internal/sysmanage"
 )
 
 var version = "dev"
 
 func main() {
 	if len(os.Args) > 1 && sysmanage.IsCommand(os.Args[1]) {
-		manager := sysmanage.New(guard.ExecRunner{})
+		manager := sysmanage.New(controller.ExecRunner{})
 		if err := manager.RunCLI(context.Background(), os.Args[1:]); err != nil {
 			fatalf("%v", err)
 		}
 		return
 	}
-	configPath := flag.String("config", "/Library/Application Support/LightNodeGuard/config.json", "configuration file")
+	configPath := flag.String("config", "/Library/Application Support/LightNodeController/config.json", "configuration file")
 	once := flag.Bool("once", false, "run checks once and print JSON")
 	flag.Parse()
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fatalf("load config: %v", err)
 	}
-	controller := guard.NewController(cfg, guard.ExecRunner{}, version)
+	appController := controller.NewController(cfg, controller.ExecRunner{}, version)
 	if *once {
-		snapshot := controller.CheckNow(context.Background())
+		snapshot := appController.CheckNow(context.Background())
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
 		return
 	}
 	if !cfg.DisableAuthentication && (cfg.AdminPassword == "" || cfg.AdminPassword == "CHANGE_ME") {
-		fatalf("adminPassword or LIGHTNODE_GUARD_ADMIN_PASSWORD is required")
+		fatalf("adminPassword or LIGHTNODE_CONTROLLER_ADMIN_PASSWORD is required")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	controller.Start(ctx)
+	appController.Start(ctx)
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
-		Handler:           httpapi.New(controller, cfg.AdminUser, cfg.AdminPassword, cfg.DisableAuthentication),
+		Handler:           httpapi.New(appController, cfg.AdminUser, cfg.AdminPassword, cfg.DisableAuthentication),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      180 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	go func() {
-		log.Printf("LightNode Guard %s listening on http://%s", version, cfg.ListenAddress)
+		log.Printf("LightNode Controller %s listening on http://%s", version, cfg.ListenAddress)
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			fatalf("serve: %v", err)
 		}

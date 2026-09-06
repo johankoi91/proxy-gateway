@@ -1,4 +1,4 @@
-# LightNode Mac Guard 架构设计
+# LightNode Mac Controller 架构设计
 
 ## 1. 目标与边界
 
@@ -20,7 +20,7 @@
 - 按连接选择出口。
 - 东京线路故障后回落到 Wi-Fi 公网。
 
-局域网 SSH、屏幕共享、DHCP 和到 VPS Endpoint 的连接属于维持管理与重连所需的
+局域网带外管理、DHCP 和到 VPS Endpoint 的连接属于维持管理与重连所需的
 明确例外，不属于公网回落。
 
 ## 2. 安全不变量
@@ -50,8 +50,8 @@
 │                         ▼                       │              │
 │               VLESS Reality / TCP 443           │              │
 │                         │                       │              │
-│  PF Kill Switch         │      Go Guard         │              │
-│  阻断物理公网回落        │      检测/恢复/API      │              │
+│  PF Kill Switch         │      Go Controller         │              │
+│  启动引导/阻断物理回落    │      检测/恢复/API       │              │
 └─────────────────────────┼───────────────────────┼──────────────┘
                           ▼                       │
                 149.104.78.121 东京 VPS           │
@@ -65,9 +65,9 @@
 | 进程 | 职责 |
 | --- | --- |
 | `sing-box` | TUN、DNS、VLESS Reality 和连接观测 API |
-| `lightnode-guard` | 健康检查、自动恢复、管理后台、事件和 Go 系统命令 |
+| `lightnode-controller` | 健康检查、自动恢复、管理后台、事件和 Go 系统命令 |
 
-PF 在 macOS 内核中执行，React 已编译进 Guard，launchd 是系统自带服务管理器，均
+PF 在 macOS 内核中执行，React 已编译进 Controller，launchd 是系统自带服务管理器，均
 不增加项目常驻进程。
 
 ## 4. 业务数据流
@@ -138,9 +138,18 @@ PF 与 TUN 的职责不同：TUN 决定正常流量如何到日本，PF 决定 T
 Token，再注册 launchd 回滚任务。只有出口和 Anchor 均验证正确后执行确认，才会
 写入 `firewall.committed` 并启用自动修复。
 
+### 6.1 启动边界
+
+macOS 自带 `com.apple.pfctl` 会加载 `/etc/pf.conf`，但不会自动启用 PF。Controller
+安装独立的 root LaunchDaemon `com.lightnode.pf-bootstrap`：只要检测到已提交的
+`firewall.committed`，就在用户登录与业务进程之前校验主配置和 fail-closed Anchor，
+执行 `pfctl -f` 并在需要时执行 `pfctl -e`。它不等待 sing-box、TUN 或 DNS。
+
+新装且尚未提交 Kill Switch 时，PF 引导明确跳过，避免用占位配置锁死机器。
+
 ## 7. IPv6
 
-sing-box DNS 使用 `ipv4_only`，PF 阻断物理接口的公网 IPv6。Guard 的 IPv6 探针
+sing-box DNS 使用 `ipv4_only`，PF 阻断物理接口的公网 IPv6。Controller 的 IPv6 探针
 接受两种安全结果：
 
 - IPv6 不可用。
@@ -153,8 +162,8 @@ sing-box DNS 使用 `ipv4_only`，PF 阻断物理接口的公网 IPv6。Guard �
 Go 二进制有两种运行方式：
 
 ```text
-lightnode-guard                  -> 常驻 Guard / HTTP 服务
-lightnode-guard <系统子命令>      -> 短时特权操作
+lightnode-controller                  -> 常驻 Controller / HTTP 服务
+lightnode-controller <系统子命令>      -> 短时特权操作
 ```
 
 后台操作链：
@@ -162,8 +171,8 @@ lightnode-guard <系统子命令>      -> 短时特权操作
 ```text
 React
   -> POST /api/actions/*
-  -> Guard Controller
-  -> lightnode-guard tunnel start|pause|restart
+  -> Controller
+  -> lightnode-controller tunnel start|pause|restart
   -> Go sysmanage
   -> 固定参数调用 launchctl/pfctl/networksetup/scutil
   -> 重新检查
@@ -176,7 +185,7 @@ Go 使用 `exec.CommandContext` 和完整命令路径，不经过 `sh -c`。超�
 
 ## 9. 冲突处理
 
-Guard 每 10 秒执行完整检查，每 2 秒巡检代理/VPN 冲突。冲突包括：
+Controller 每 10 秒执行完整检查，每 2 秒巡检代理/VPN 冲突。冲突包括：
 
 - macOS HTTP、HTTPS、SOCKS、PAC 或自动代理。
 - Clash Verge、Mihomo 或 FlClash 进程。
@@ -199,7 +208,7 @@ AppleScript 不参与路由、DNS、PF、进程观测、保活或故障状态判
 
 ## 11. 信任边界
 
-- 获得 root 权限的软件可以修改 PF、停止 Guard 或替换二进制，本系统不对抗同级
+- 获得 root 权限的软件可以修改 PF、停止 Controller 或替换二进制，本系统不对抗同级
   root 攻击者。
 - DoH 上游仍能看到由 VPS 发出的 DNS 查询；设计目标是避免本地 ISP 泄漏。
 - 管理后台只监听 `127.0.0.1:9180`。远程访问应使用 SSH 转发，不应开放公网端口。
@@ -211,10 +220,20 @@ AppleScript 不参与路由、DNS、PF、进程观测、保活或故障状态判
 节点配置不使用数据库，以下两个 JSON 是唯一数据源：
 
 ```text
-/Library/Application Support/LightNodeGuard/config.json
-/Library/Application Support/LightNodeGuard/sing-box.json
+/Library/Application Support/LightNodeController/config.json
+/Library/Application Support/LightNodeController/sing-box.json
 ```
 
 后台只返回 Endpoint、flow、TLS SNI 和指纹；UUID、Reality 公钥、short ID 只返回
 是否已配置。保存使用候选文件校验和同目录原子替换，然后按新 Endpoint 重建 PF、
 启动隧道并验证出口。任一步失败都会恢复旧文件和旧 PF 规则，公网始终失败关闭。
+
+VPS 后台导出的 `lightnode.vps-config` v1 可以直接导入。导入只接受 VLESS TCP、
+Reality、`xtls-rprx-vision` 和完整客户端凭据。导入、手工修改和恢复前都会创建
+root-only 备份；后台只返回备份时间、原因与 Endpoint，不返回原始 JSON 或凭据。
+
+## 13. 配置与日志生命周期
+
+配置备份位于 `/Library/Application Support/LightNodeController/backups`，权限为
+`0700/0600`，默认保留 10 份。Controller、sing-box、PF 引导和事件日志超过 5 MiB
+后执行 copy-truncate，默认保留 3 份，避免 launchd 持有旧文件描述符导致轮转失效。

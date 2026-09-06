@@ -2,16 +2,31 @@ package sysmanage
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
+
+type recordingRunner struct {
+	mu       sync.Mutex
+	commands []string
+}
+
+func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	r.commands = append(r.commands, strings.Join(append([]string{name}, args...), " "))
+	r.mu.Unlock()
+	if name == "/sbin/pfctl" && reflect.DeepEqual(args, []string{"-s", "info"}) {
+		return []byte("Status: Disabled\n"), nil
+	}
+	return nil, nil
+}
 
 func TestNetworkParsers(t *testing.T) {
 	nwi := "Network interfaces: utun4 en0\n"
@@ -71,85 +86,39 @@ func TestRemoveManagedPFBlock(t *testing.T) {
 	}
 }
 
-func TestConfigCommandMigration(t *testing.T) {
+func TestBootstrapFirewallLoadsAndEnablesCommittedRules(t *testing.T) {
 	directory := t.TempDir()
-	configPath := filepath.Join(directory, "config.json")
-	data := []byte(`{"version":1,"vpsAddress":"149.104.78.121","vpsPort":443,"expectedEgressIp":"149.104.78.121","egressProbeUrl":"https://api.ipify.org","dnsProbeHost":"claude.ai","custom":"preserved"}`)
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+	mainConfig := filepath.Join(directory, "pf.conf")
+	anchor := filepath.Join(directory, "anchor")
+	committed := filepath.Join(directory, "firewall.committed")
+	if err := os.WriteFile(mainConfig, []byte(managedBegin+"\nanchor \"com.lightnode.vless-killswitch\"\nload anchor \"com.lightnode.vless-killswitch\" from \""+anchor+"\"\n"+managedEnd+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := New(nil)
-	manager.Paths.Config = configPath
-	manager.Paths.GuardBinary = "/test/lightnode-guard"
-	if err := manager.migrateConfigCommands(); err != nil {
+	if err := os.WriteFile(anchor, []byte("block drop out quick inet all\nblock drop out quick inet6 all\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := os.ReadFile(configPath)
-	if err != nil {
+	if err := os.WriteFile(committed, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var document map[string]any
-	if err := json.Unmarshal(updated, &document); err != nil {
+	runner := &recordingRunner{}
+	manager := New(runner)
+	manager.EUID = func() int { return 0 }
+	manager.Paths.PFConfig = mainConfig
+	manager.Paths.PFAnchor = anchor
+	manager.Paths.Committed = committed
+	if err := manager.BootstrapFirewall(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if document["custom"] != "preserved" {
-		t.Fatal("custom configuration was not preserved")
-	}
-	actual := document["pauseCommand"]
-	expected := []any{"/test/lightnode-guard", "tunnel", "pause"}
-	if !reflect.DeepEqual(actual, expected) {
-		t.Fatalf("pause command = %#v", actual)
-	}
-}
-
-func TestGlobalTokyoMigrationPreservesCredentials(t *testing.T) {
-	directory := t.TempDir()
-	singBoxPath := filepath.Join(directory, "sing-box.json")
-	policyPath := filepath.Join(directory, "policy.json")
-	input := `{
-  "dns":{"servers":[{"type":"https","detour":"ai-fixed"}]},
-  "outbounds":[{"type":"vless","tag":"ai-fixed","uuid":"keep-uuid","tls":{"reality":{"public_key":"keep-key","short_id":"keep-short"}}}],
-  "route":{"rules":[{"protocol":"dns","action":"hijack-dns"},{"process_path_regex":["Claude"],"outbound":"ai-fixed"},{"domain_suffix":["openai.com"],"outbound":"ai-fixed"}],"final":"ai-fixed"},
-  "experimental":{"clash_api":{"secret":"keep-secret"}}
-}`
-	if err := os.WriteFile(singBoxPath, []byte(input), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(policyPath, []byte(`{"version":1,"mode":"enforce","profile":"global_japan","aiProcessNames":["Claude"]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := New(nil)
-	manager.Paths.SingBoxConfig = singBoxPath
-	manager.Paths.Policy = policyPath
-	if err := manager.migrateGlobalTokyoPolicy(); err != nil {
-		t.Fatal(err)
-	}
-	updated, err := os.ReadFile(singBoxPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(updated)
-	for _, expected := range []string{"keep-uuid", "keep-key", "keep-short", "keep-secret", `"tag": "tokyo"`, `"detour": "tokyo"`, `"final": "tokyo"`} {
-		if !strings.Contains(text, expected) {
-			t.Fatalf("migrated config lost %q: %s", expected, text)
+	joined := strings.Join(runner.commands, "\n")
+	for _, expected := range []string{"/sbin/pfctl -vnf " + mainConfig, "/sbin/pfctl -f " + mainConfig, "/sbin/pfctl -e"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing %q in commands:\n%s", expected, joined)
 		}
-	}
-	for _, removed := range []string{"ai-fixed", "process_path_regex", "domain_suffix"} {
-		if strings.Contains(text, removed) {
-			t.Fatalf("migrated config retained %q: %s", removed, text)
-		}
-	}
-	policy, err := os.ReadFile(policyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(policy), "aiProcess") {
-		t.Fatalf("classification rules remain in policy: %s", policy)
 	}
 }
 
 func TestCommandRecognition(t *testing.T) {
-	for _, value := range []string{"tunnel", "firewall", "dns", "conflicts", "notify", "install", "uninstall"} {
+	for _, value := range []string{"tunnel", "firewall", "dns", "conflicts", "notify", "install", "uninstall", "regression"} {
 		if !IsCommand(value) {
 			t.Fatalf("command %q not recognized", value)
 		}

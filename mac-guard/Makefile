@@ -15,8 +15,8 @@ web:
 build: web
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO_BIN) build -trimpath \
 		-ldflags="-s -w -X main.version=$$(tr -d '[:space:]' < VERSION)" \
-		-o dist/lightnode-guard-darwin-arm64 ./cmd/lightnode-guard
-	chmod 0755 dist/lightnode-guard-darwin-arm64
+		-o dist/lightnode-controller-darwin-arm64 ./cmd/lightnode-controller
+	chmod 0755 dist/lightnode-controller-darwin-arm64
 
 pkg:
 	./scripts/package/build-pkg.sh

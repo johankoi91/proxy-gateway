@@ -17,6 +17,45 @@ const firewallAnchor = "com.lightnode.vless-killswitch"
 
 var interfacePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+func (m *Manager) BootstrapFirewall(ctx context.Context) error {
+	if err := m.requireRoot(); err != nil {
+		return err
+	}
+	if !fileExists(m.Paths.Committed) {
+		m.printf("Kill Switch has not been committed; PF bootstrap skipped.\n")
+		return nil
+	}
+	mainConfig, err := os.ReadFile(m.Paths.PFConfig)
+	if err != nil {
+		return fmt.Errorf("read PF main configuration: %w", err)
+	}
+	anchor, err := os.ReadFile(m.Paths.PFAnchor)
+	if err != nil {
+		return fmt.Errorf("read fail-closed PF Anchor: %w", err)
+	}
+	if !strings.Contains(string(mainConfig), managedBegin) || !strings.Contains(string(mainConfig), m.Paths.PFAnchor) {
+		return errors.New("PF main configuration does not contain the managed Kill Switch")
+	}
+	if !strings.Contains(string(anchor), "block drop out quick inet all") || !strings.Contains(string(anchor), "block drop out quick inet6 all") {
+		return errors.New("PF Anchor is not fail-closed")
+	}
+	if _, err := m.run(ctx, "/sbin/pfctl", "-vnf", m.Paths.PFConfig); err != nil {
+		return fmt.Errorf("validate boot PF configuration: %w", err)
+	}
+	if _, err := m.run(ctx, "/sbin/pfctl", "-f", m.Paths.PFConfig); err != nil {
+		return fmt.Errorf("load boot PF configuration: %w", err)
+	}
+	info, _ := m.run(ctx, "/sbin/pfctl", "-s", "info")
+	if !strings.Contains(string(info), "Status: Enabled") {
+		if _, err := m.run(ctx, "/sbin/pfctl", "-e"); err != nil {
+			return fmt.Errorf("enable PF at boot: %w", err)
+		}
+	}
+	m.log(ctx, "PF boot rules loaded and enabled")
+	m.printf("PF boot rules are enabled.\n")
+	return nil
+}
+
 func (m *Manager) renderPF(ctx context.Context, templatePath string) (string, error) {
 	cfg, err := m.loadConfig()
 	if err != nil {
@@ -265,8 +304,8 @@ func (m *Manager) EnableFirewall(ctx context.Context, rollbackSeconds int) (err 
 	}
 	armed = false
 	m.printf("Kill Switch trial enabled. It will roll back in %d seconds.\n", rollbackSeconds)
-	m.printf("Verify SSH, Screen Sharing, egress, DNS and IPv6, then run:\n")
-	m.printf("  sudo /usr/local/libexec/lightnode-guard firewall confirm\n")
+	m.printf("Verify management access, egress, DNS and IPv6, then run:\n")
+	m.printf("  sudo /usr/local/libexec/lightnode-controller firewall confirm\n")
 	return nil
 }
 

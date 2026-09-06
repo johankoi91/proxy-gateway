@@ -8,7 +8,7 @@ import (
 
 func IsCommand(value string) bool {
 	switch value {
-	case "tunnel", "firewall", "dns", "conflicts", "notify", "install", "uninstall":
+	case "tunnel", "firewall", "dns", "conflicts", "notify", "install", "uninstall", "regression":
 		return true
 	default:
 		return false
@@ -22,7 +22,7 @@ func (m *Manager) RunCLI(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "tunnel":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: lightnode-guard tunnel start|pause|restart")
+			return fmt.Errorf("usage: lightnode-controller tunnel start|pause|restart")
 		}
 		switch args[1] {
 		case "start":
@@ -37,6 +37,8 @@ func (m *Manager) RunCLI(ctx context.Context, args []string) error {
 			break
 		}
 		switch args[1] {
+		case "bootstrap":
+			return m.BootstrapFirewall(ctx)
 		case "refresh":
 			return m.RefreshFirewall(ctx, hasFlag(args[2:], "--force"))
 		case "enable":
@@ -57,7 +59,7 @@ func (m *Manager) RunCLI(ctx context.Context, args []string) error {
 			return m.DisableFirewall(ctx, hasFlag(args[2:], "--yes"))
 		case "rollback":
 			if len(args) < 3 || len(args) > 4 {
-				return fmt.Errorf("usage: lightnode-guard firewall rollback TOKEN [SECONDS]")
+				return fmt.Errorf("usage: lightnode-controller firewall rollback TOKEN [SECONDS]")
 			}
 			delay := 180
 			if len(args) == 4 {
@@ -84,7 +86,7 @@ func (m *Manager) RunCLI(ctx context.Context, args []string) error {
 			return m.RemediateConflicts(ctx)
 		}
 	case "notify":
-		severity, component, message := "warning", "guard", "LightNode Guard state changed"
+		severity, component, message := "warning", "controller", "LightNode Controller state changed"
 		if len(args) > 1 {
 			severity = args[1]
 		}
@@ -101,6 +103,23 @@ func (m *Manager) RunCLI(ctx context.Context, args []string) error {
 		}
 	case "uninstall":
 		return m.Uninstall(ctx, hasFlag(args[1:], "--purge"))
+	case "regression":
+		if len(args) >= 2 && args[1] == "recover" {
+			delay := 0
+			for index := 2; index+1 < len(args); index++ {
+				if args[index] == "--delay-seconds" {
+					value, err := strconv.Atoi(args[index+1])
+					if err != nil || value < 0 || value > 300 {
+						return fmt.Errorf("invalid recovery delay %q", args[index+1])
+					}
+					delay = value
+				}
+			}
+			return m.RecoverRegression(ctx, delay)
+		}
+		if len(args) >= 2 && args[1] == "run" {
+			return m.RunRegression(ctx, hasFlag(args[2:], "--yes"), hasFlag(args[2:], "--include-network-drop"))
+		}
 	}
 	return fmt.Errorf("unsupported command: %v", args)
 }

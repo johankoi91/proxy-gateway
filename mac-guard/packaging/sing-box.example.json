@@ -7,7 +7,7 @@
     "servers": [
       {
         "type": "https",
-        "tag": "dns-ai",
+        "tag": "dns-tunnel",
         "server": "104.16.249.249",
         "server_port": 443,
         "path": "/dns-query",
@@ -19,7 +19,7 @@
       }
     ],
     "strategy": "ipv4_only",
-    "final": "dns-ai"
+    "final": "dns-tunnel"
   },
   "inbounds": [
     {
@@ -72,7 +72,7 @@
   "experimental": {
     "clash_api": {
       "external_controller": "127.0.0.1:9090",
-      "secret": "REPLACE_CLASH_API_SECRET",
+      "secret": "REPLACE_CONNECTION_API_SECRET",
       "access_control_allow_origin": [
         "http://127.0.0.1:9180"
       ],

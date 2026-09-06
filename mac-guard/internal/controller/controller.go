@@ -1,4 +1,4 @@
-package guard
+package controller
 
 import (
 	"context"
@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"lightnode-mac-guard/internal/config"
-	"lightnode-mac-guard/internal/model"
-	"lightnode-mac-guard/internal/policy"
+	"lightnode-mac-controller/internal/config"
+	"lightnode-mac-controller/internal/model"
+	"lightnode-mac-controller/internal/observer"
 )
 
 type Controller struct {
@@ -25,6 +25,7 @@ type Controller struct {
 	checker             *checker
 	version             string
 	mu                  sync.RWMutex
+	logMu               sync.Mutex
 	checkMu             sync.Mutex
 	nodeUpdateMu        sync.Mutex
 	snapshot            model.Snapshot
@@ -35,8 +36,8 @@ type Controller struct {
 	lastConflictRepair  atomic.Int64
 	lastConflictTrigger atomic.Int64
 	startedAt           time.Time
-	policyEngine        *policy.Engine
-	policyInitError     string
+	connectionObserver  *observer.Observer
+	observerInitError   string
 }
 
 func NewController(cfg config.Config, runner Runner, version string) *Controller {
@@ -53,20 +54,18 @@ func NewController(cfg config.Config, runner Runner, version string) *Controller
 			RuntimeConfig: runtimeConfiguration(cfg),
 		},
 	}
+	controller.rotateLogs()
 	controller.loadEvents()
-	if cfg.V2Enabled {
-		engine, err := policy.New(policy.Options{
-			PolicyFile:  cfg.V2PolicyFile,
-			ClashAPIURL: cfg.V2ClashAPIURL, ClashAPISecret: cfg.V2ClashAPISecret,
-			PollInterval: time.Duration(cfg.V2PollIntervalSeconds) * time.Second,
-			OnViolation:  controller.policyViolationObserved,
-		})
-		if err != nil {
-			controller.policyInitError = err.Error()
-			log.Printf("[error] policy_v2: %v", err)
-		} else {
-			controller.policyEngine = engine
-		}
+	connectionObserver, err := observer.New(observer.Options{
+		APIURL: cfg.ConnectionAPIURL, APISecret: cfg.ConnectionAPISecret,
+		PollInterval: time.Duration(cfg.ConnectionPollIntervalSeconds) * time.Second,
+		OnViolation:  controller.connectionViolationObserved,
+	})
+	if err != nil {
+		controller.observerInitError = err.Error()
+		log.Printf("[error] connection_observer: %v", err)
+	} else {
+		controller.connectionObserver = connectionObserver
 	}
 	return controller
 }
@@ -88,8 +87,8 @@ func (c *Controller) Start(ctx context.Context) {
 	if c.cfg.ConflictAutoRemediate {
 		go c.watchNetworkConflicts(ctx)
 	}
-	if c.policyEngine != nil {
-		c.policyEngine.Start(ctx)
+	if c.connectionObserver != nil {
+		c.connectionObserver.Start(ctx)
 	}
 }
 
@@ -120,6 +119,7 @@ func (c *Controller) watchNetworkConflicts(ctx context.Context) {
 func (c *Controller) CheckNow(parent context.Context) model.Snapshot {
 	c.checkMu.Lock()
 	defer c.checkMu.Unlock()
+	c.rotateLogs()
 	c.setChecking(true)
 	ctx, cancel := context.WithTimeout(parent, c.cfg.CheckTimeout()*6)
 	defer cancel()
@@ -272,62 +272,49 @@ func (c *Controller) Snapshot() model.Snapshot {
 	b, _ := json.Marshal(c.snapshot)
 	var out model.Snapshot
 	_ = json.Unmarshal(b, &out)
-	if c.policyEngine != nil {
-		policySnapshot := c.policyEngine.Snapshot()
-		out.PolicyV2 = &policySnapshot
+	if c.connectionObserver != nil {
+		connectionSnapshot := c.connectionObserver.Snapshot()
+		out.Connections = connectionSnapshot
 		if out.State != model.StateMaintenance {
-			out.Alerts = append(policyAlerts(policySnapshot), out.Alerts...)
+			out.Alerts = append(connectionAlerts(connectionSnapshot), out.Alerts...)
 		}
-	} else if c.cfg.V2Enabled {
-		out.PolicyV2 = &model.PolicyV2Snapshot{
-			Enabled: true, Mode: model.PolicyModeEnforce,
-			ObserverHealth: model.HealthFailed, ObserverMessage: c.policyInitError,
-		}
+	} else {
+		out.Connections = model.ConnectionObservation{Health: model.HealthFailed, Message: c.observerInitError}
 		out.Alerts = append([]model.Alert{{
-			ID: "policy_v2_init", Severity: "critical", Title: "V2 策略初始化失败",
-			Message: c.policyInitError, Component: "policy_v2", RaisedAt: time.Now().UTC(),
+			ID: "connection_observer_init", Severity: "warning", Title: "连接观测初始化失败",
+			Message: c.observerInitError, Component: "connection_observer", RaisedAt: time.Now().UTC(),
 		}}, out.Alerts...)
 	}
 	return out
 }
 
-func policyAlerts(snapshot model.PolicyV2Snapshot) []model.Alert {
+func connectionAlerts(snapshot model.ConnectionObservation) []model.Alert {
 	now := time.Now().UTC()
 	alerts := make([]model.Alert, 0, 3)
-	if snapshot.ObserverHealth == model.HealthFailed {
+	if snapshot.Health == model.HealthFailed {
 		alerts = append(alerts, model.Alert{
-			ID: "policy_v2_observer", Severity: "critical", Title: "V2 连接观测异常",
-			Message: snapshot.ObserverMessage, Component: "policy_v2", RaisedAt: now,
+			ID: "connection_observer", Severity: "warning", Title: "连接观测异常",
+			Message: snapshot.Message, Component: "connection_observer", RaisedAt: now,
 		})
 	}
 	if snapshot.ViolationCount > 0 {
 		alerts = append(alerts, model.Alert{
-			ID: "policy_v2_violation", Severity: "critical", Title: "东京出口违例",
+			ID: "connection_violation", Severity: "critical", Title: "东京出口违例",
 			Message:   fmt.Sprintf("发现 %d 条活动连接未经过期望出口。", snapshot.ViolationCount),
-			Component: "policy_v2", RaisedAt: now,
+			Component: "connection_observer", RaisedAt: now,
 		})
 	}
 	return alerts
 }
 
-func (c *Controller) policyViolationObserved(connection model.PolicyConnection) {
+func (c *Controller) connectionViolationObserved(connection model.ObservedConnection) {
 	target := connection.Host
 	if target == "" {
 		target = connection.DestinationIP
 	}
 	c.mu.Lock()
-	c.addEventLocked("critical", "policy_v2", fmt.Sprintf("东京出口违例: %s -> %s 未经过 tokyo 出站", filepath.Base(connection.ProcessPath), target))
+	c.addEventLocked("critical", "connection_observer", fmt.Sprintf("东京出口违例: %s -> %s 未经过 tokyo 出站", filepath.Base(connection.ProcessPath), target))
 	c.mu.Unlock()
-}
-
-func (c *Controller) PolicySnapshot() (model.PolicyV2Snapshot, error) {
-	if c.policyEngine == nil {
-		if c.policyInitError != "" {
-			return model.PolicyV2Snapshot{}, errors.New(c.policyInitError)
-		}
-		return model.PolicyV2Snapshot{}, errors.New("V2 policy is disabled")
-	}
-	return c.policyEngine.Snapshot(), nil
 }
 
 func (c *Controller) RestartTunnel(parent context.Context) error {
@@ -339,7 +326,7 @@ func (c *Controller) RestartTunnel(parent context.Context) error {
 	}
 	c.mu.Lock()
 	c.snapshot.Recovering = true
-	c.transitionLocked(model.StateRecovering, "guard", "正在执行隧道恢复命令")
+	c.transitionLocked(model.StateRecovering, "controller", "正在执行隧道恢复命令")
 	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
@@ -382,7 +369,7 @@ func (c *Controller) runTunnelAction(parent context.Context, command []string, s
 	}
 	c.mu.Lock()
 	c.snapshot.Recovering = true
-	c.transitionLocked(model.StateRecovering, "guard", started)
+	c.transitionLocked(model.StateRecovering, "controller", started)
 	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
 	defer cancel()
@@ -414,10 +401,10 @@ func (c *Controller) apply(output checkOutput) {
 		byID[component.ID] = component
 	}
 	protected := isHealthy(byID["firewall"])
-	connected := allHealthy(byID, "network_conflict", "firewall_config", "firewall_binding", "provider", "provider_service", "guard_service", "tunnel", "transport", "egress", "dns", "config")
-	if c.policyEngine != nil {
-		policySnapshot := c.policyEngine.Snapshot()
-		if policySnapshot.ObserverHealth != model.HealthHealthy || policySnapshot.ViolationCount > 0 {
+	connected := allHealthy(byID, "network_conflict", "firewall_config", "firewall_binding", "pf_bootstrap_service", "provider", "provider_service", "controller_service", "tunnel", "transport", "egress", "dns", "config")
+	if c.connectionObserver != nil {
+		connectionSnapshot := c.connectionObserver.Snapshot()
+		if connectionSnapshot.ViolationCount > 0 {
 			connected = false
 		}
 	}
@@ -472,10 +459,10 @@ func (c *Controller) apply(output checkOutput) {
 		}
 	}
 	if c.snapshot.LastCheckAt.IsZero() {
-		c.addEventLocked("info", "guard", "首次组件检查完成")
+		c.addEventLocked("info", "controller", "首次组件检查完成")
 	}
 	if c.snapshot.State != state {
-		c.transitionLocked(state, "guard", fmt.Sprintf("保护状态变更: %s -> %s", c.snapshot.State, state))
+		c.transitionLocked(state, "controller", fmt.Sprintf("保护状态变更: %s -> %s", c.snapshot.State, state))
 	}
 	c.snapshot.Version = c.version
 	c.snapshot.State = state
@@ -511,7 +498,7 @@ func (c *Controller) setChecking(value bool) {
 	c.mu.Unlock()
 }
 
-func (c *Controller) transitionLocked(state model.GuardState, component, message string) {
+func (c *Controller) transitionLocked(state model.ControllerState, component, message string) {
 	if c.snapshot.State != state {
 		c.snapshot.StateSince = time.Now().UTC()
 	}
@@ -545,6 +532,8 @@ func (c *Controller) addEventLocked(severity, component, message string) {
 }
 
 func (c *Controller) persistEvent(event model.Event) {
+	c.logMu.Lock()
+	defer c.logMu.Unlock()
 	if c.cfg.EventLogFile == "" {
 		return
 	}
@@ -574,17 +563,10 @@ func (c *Controller) loadEvents() {
 			if event.ID > c.eventID.Load() {
 				c.eventID.Store(event.ID)
 			}
-			if legacyPolicyEvent(event) {
-				continue
-			}
 			c.events = append(c.events, event)
 		}
 	}
 	c.snapshot.Events = append([]model.Event(nil), c.events...)
-}
-
-func legacyPolicyEvent(event model.Event) bool {
-	return event.Component == "policy_v2" && strings.HasPrefix(event.Message, "发现待分类连接:")
 }
 
 func buildStages(byID map[string]model.Component) []model.Stage {
@@ -599,7 +581,7 @@ func buildStages(byID map[string]model.Component) []model.Stage {
 	}
 }
 
-func buildAlerts(byID map[string]model.Component, state model.GuardState, now time.Time) []model.Alert {
+func buildAlerts(byID map[string]model.Component, state model.ControllerState, now time.Time) []model.Alert {
 	alerts := make([]model.Alert, 0)
 	if state == model.StateUnprotected {
 		alerts = append(alerts, model.Alert{ID: "unprotected", Severity: "critical", Title: "出口未受保护", Message: "PF Kill Switch 未确认生效，存在本地公网回落风险。", Component: "firewall", RaisedAt: now})

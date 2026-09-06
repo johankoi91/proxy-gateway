@@ -1,6 +1,6 @@
 services:
   gateway:
-    image: lightnode-vpn-gateway:1.0.0
+    image: lightnode-vpn-gateway:1.0.1
     container_name: vpn-gateway
     restart: unless-stopped
     network_mode: host

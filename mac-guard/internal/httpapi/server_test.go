@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"lightnode-mac-guard/internal/config"
-	"lightnode-mac-guard/internal/guard"
+	"lightnode-mac-controller/internal/config"
+	"lightnode-mac-controller/internal/controller"
 )
 
 type failingRunner struct{}
@@ -23,7 +23,7 @@ func (failingRunner) Run(context.Context, string, ...string) ([]byte, error) {
 func TestAuthenticationAndHealth(t *testing.T) {
 	cfg := config.Default()
 	cfg.EventLogFile = filepath.Join(t.TempDir(), "events.jsonl")
-	controller := guard.NewController(cfg, failingRunner{}, "test")
+	controller := controller.NewController(cfg, failingRunner{}, "test")
 	handler := New(controller, "admin", "test-password", false)
 
 	health := httptest.NewRecorder()
@@ -50,7 +50,7 @@ func TestAuthenticationAndHealth(t *testing.T) {
 func TestAuthenticationCanBeDisabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.EventLogFile = filepath.Join(t.TempDir(), "events.jsonl")
-	controller := guard.NewController(cfg, failingRunner{}, "test")
+	controller := controller.NewController(cfg, failingRunner{}, "test")
 	handler := New(controller, "", "", true)
 
 	response := httptest.NewRecorder()
@@ -63,7 +63,7 @@ func TestAuthenticationCanBeDisabled(t *testing.T) {
 func TestCrossOriginWriteIsRejected(t *testing.T) {
 	cfg := config.Default()
 	cfg.EventLogFile = filepath.Join(t.TempDir(), "events.jsonl")
-	controller := guard.NewController(cfg, failingRunner{}, "test")
+	controller := controller.NewController(cfg, failingRunner{}, "test")
 	handler := New(controller, "", "", true)
 
 	request := httptest.NewRequest(http.MethodPost, "/api/tests/run", nil)
@@ -76,37 +76,10 @@ func TestCrossOriginWriteIsRejected(t *testing.T) {
 	}
 }
 
-func TestV2PolicyEndpoint(t *testing.T) {
-	directory := t.TempDir()
-	policyFile := filepath.Join(directory, "policy.json")
-	policyJSON := `{
-  "version": 1,
-  "mode": "enforce",
-  "profile": "global_japan"
-}`
-	if err := os.WriteFile(policyFile, []byte(policyJSON), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Default()
-	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
-	cfg.V2Enabled = true
-	cfg.V2PolicyFile = policyFile
-	cfg.V2ClashAPIURL = "http://127.0.0.1:39090"
-	cfg.V2ClashAPISecret = "test-secret"
-	controller := guard.NewController(cfg, failingRunner{}, "test")
-	handler := New(controller, "", "", true)
-
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v2/policy", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
-	}
-}
-
 func TestLifecycleEndpointsArePostOnly(t *testing.T) {
 	cfg := config.Default()
 	cfg.EventLogFile = filepath.Join(t.TempDir(), "events.jsonl")
-	controller := guard.NewController(cfg, failingRunner{}, "test")
+	controller := controller.NewController(cfg, failingRunner{}, "test")
 	handler := New(controller, "", "", true)
 	for _, path := range []string{"/api/actions/start", "/api/actions/pause"} {
 		response := httptest.NewRecorder()
@@ -125,6 +98,7 @@ func TestNodeEndpointReturnsSanitizedConfiguration(t *testing.T) {
 	cfg.ConfigFilePath = configPath
 	cfg.SingBoxConfigFile = singBoxPath
 	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
+	cfg.BackupDir = filepath.Join(directory, "backups")
 	configData, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +110,7 @@ func TestNodeEndpointReturnsSanitizedConfiguration(t *testing.T) {
 	if err := os.WriteFile(singBoxPath, []byte(singBox), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	controller := guard.NewController(cfg, failingRunner{}, "test")
+	controller := controller.NewController(cfg, failingRunner{}, "test")
 	handler := New(controller, "", "", true)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/node", nil))
@@ -145,5 +119,22 @@ func TestNodeEndpointReturnsSanitizedConfiguration(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "must-not-leak") {
 		t.Fatalf("node response leaked credentials: %s", response.Body.String())
+	}
+
+	backupResponse := httptest.NewRecorder()
+	handler.ServeHTTP(backupResponse, httptest.NewRequest(http.MethodPost, "/api/backups", nil))
+	if backupResponse.Code != http.StatusCreated || strings.Contains(backupResponse.Body.String(), "must-not-leak") {
+		t.Fatalf("backup response status=%d body=%s", backupResponse.Code, backupResponse.Body.String())
+	}
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/api/backups", nil))
+	if listResponse.Code != http.StatusOK || strings.Contains(listResponse.Body.String(), "must-not-leak") {
+		t.Fatalf("backup list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+
+	invalidImport := httptest.NewRecorder()
+	handler.ServeHTTP(invalidImport, httptest.NewRequest(http.MethodPost, "/api/node/import", strings.NewReader(`{"schema":"wrong","version":1}`)))
+	if invalidImport.Code != http.StatusBadGateway {
+		t.Fatalf("invalid import status=%d body=%s", invalidImport.Code, invalidImport.Body.String())
 	}
 }
