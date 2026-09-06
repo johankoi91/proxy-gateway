@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"lightnode-mac-guard/internal/guard"
+	"lightnode-mac-guard/internal/model"
 )
 
 //go:embed static/* static/assets/*
@@ -33,6 +34,7 @@ func New(controller *guard.Controller, user, password string, disableAuth bool) 
 	mux.HandleFunc("/api/actions/start", s.auth(method(http.MethodPost, s.start)))
 	mux.HandleFunc("/api/actions/pause", s.auth(method(http.MethodPost, s.pause)))
 	mux.HandleFunc("/api/v2/policy", s.auth(method(http.MethodGet, s.policyV2)))
+	mux.HandleFunc("/api/node", s.auth(s.node))
 	mux.HandleFunc("/", s.auth(s.frontend))
 	return securityHeaders(sameOriginWrites(mux))
 }
@@ -44,6 +46,36 @@ func (s *Server) policyV2(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) node(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		configuration, err := s.controller.NodeConfiguration()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, configuration)
+	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var update model.NodeUpdate
+		if err := decoder.Decode(&update); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid node configuration: " + err.Error()})
+			return
+		}
+		configuration, err := s.controller.UpdateNode(r.Context(), update)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, configuration)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func method(allowed string, next http.HandlerFunc) http.HandlerFunc {

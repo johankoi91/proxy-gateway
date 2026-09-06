@@ -1,6 +1,6 @@
 # LightNode Mac Guard
 
-> 当前开发版本：`0.2.0-alpha.7`。全局日本策略已在专用虚拟 Mac 上部署；当前
+> 当前开发版本：`0.2.0-alpha.18`。全局日本策略已在专用虚拟 Mac 上部署；当前
 > 本机未部署并继续保留原有 Clash 环境。
 
 这是 `proxy-gateway` 下独立开发的 macOS 固定出口工程。目标是把开发 Mac
@@ -49,6 +49,8 @@ launchd: sing-box 与 Guard 开机守护
 - 后台提供“安全暂停”和“启动保护”。安全暂停先请求 Claude、ChatGPT 正常退出，
   再停止东京隧道，PF Kill Switch 始终保留；启动保护会恢复 TUN、DNS、PF 并
   验证东京出口，但不会自动打开 AI App。
+- 节点配置页直接读写现有 `config.json` 和 `sing-box.json`，不引入数据库。保存
+  前使用 macOS 原生管理员确认并校验候选配置；切换失败时恢复旧节点。
 - 面板只监听 `127.0.0.1:9180`，不对局域网或公网开放。认证可通过
   `disableAuthentication` 控制；当前远程 Mac 按用户要求关闭认证，并保留
   同源写操作校验。
@@ -59,15 +61,15 @@ V2 Alpha 已实现的离线开发能力：
   命中规则、出站链和流量计数。
 - 唯一的 `global_japan` 档位，整台机器全部公网流量固定日本。
 - Claude/ChatGPT 进程树和 AI 域名双重识别。
-- V2 后台显示活动连接、自动分类、实际链路和违例告警。
-- 后台采用四个任务标签：总览、连接观察、系统检查、事件记录。总览只显示安全
-  状态、四个关键指标、流量去向和需要关注事项；底层组件表不再占据首屏。
-- Claude/ChatGPT 连接标记为 `ai_fixed`，其他连接标记为 `japan`；两者实际使用
-  同一个日本 VLESS 出站。
+- V2 后台显示活动连接、实际东京出站和违例告警。
+- 后台采用五个任务标签：总览、连接观察、系统检查、节点配置、事件记录。总览只
+  显示安全状态、四个关键指标、流量去向和需要关注事项；底层组件不占据首屏。
+- 不再识别或标记 Claude/GPT 流量；所有连接只检查是否经过唯一的 `tokyo`
+  VLESS 出站。
 - 全局日本 sing-box 模板已通过固定版本 `1.14.0` 校验。
 
 AppleScript 只允许用于 GUI App 正常退出、macOS 通知，以及用户明确触发的单次
-管理员授权。连接观测、分类、路由、DNS 和 Kill Switch 不依赖 AppleScript；
+管理员授权。连接观测、路由、DNS 和 Kill Switch 不依赖 AppleScript；
 完整约束见 V2 设计文档的“AppleScript 使用边界”。
 
 V2 PF 已在隔离虚拟机完成故障阻断、恢复和冲突处理验收。
@@ -88,14 +90,14 @@ sing-box 第二出站接入，而不是同时运行独立 VPN App。
 配置和日志不得写入控制台、Git 或截图。VLESS UUID、Reality 公钥、short ID
 只保存在权限为 `0600` 的 `sing-box.json` 中。
 
-DNS 的完整数据路径、自动修复、故障行为和验证方法见
-[`docs/dns-design.md`](docs/dns-design.md)。
+完整文档按用途整理为：
 
-整机全部流量固定日本的 V2 定稿见
-[`docs/v2-split-routing-design.md`](docs/v2-split-routing-design.md)。
-
-其他代理/VPN 的检测、自动隔离和安全边界见
-[`docs/proxy-vpn-conflict-isolation.md`](docs/proxy-vpn-conflict-isolation.md)。
+- [`docs/architecture.md`](docs/architecture.md)：设计原则、网络架构、业务与 DNS
+  数据流、PF/IPv6 和冲突处理。
+- [`docs/operations.md`](docs/operations.md)：安装升级、控制命令、安全暂停、故障
+  行为、检查与卸载。
+- [`docs/dashboard.md`](docs/dashboard.md)：后台状态、组件数据来源、连接观察、告警、
+  API 和操作边界。
 
 ## 开发与测试
 
@@ -136,7 +138,7 @@ make pkg
 输出：
 
 ```text
-dist/LightNode-Mac-Guard-0.2.0-alpha.7.pkg
+dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg
 ```
 
 安装包内只有 `lightnode-guard`、固定版本 sing-box、launchd 配置、模板和文档。
@@ -145,7 +147,7 @@ dist/LightNode-Mac-Guard-0.2.0-alpha.7.pkg
 原生安装包可双击安装，或使用：
 
 ```bash
-sudo installer -pkg dist/LightNode-Mac-Guard-0.2.0-alpha.7.pkg -target /
+sudo installer -pkg dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg -target /
 ```
 
 默认构建为未签名开发包；设置 `PKG_SIGN_IDENTITY` 后，`make pkg` 会使用对应的
@@ -158,8 +160,8 @@ PKG 新装时只启动管理服务，不会直接启用 PF；配置仍为占位�
 sing-box：
 
 ```bash
-shasum -a 256 -c dist/LightNode-Mac-Guard-0.2.0-alpha.7.pkg.sha256
-sudo installer -pkg dist/LightNode-Mac-Guard-0.2.0-alpha.7.pkg -target /
+shasum -a 256 -c dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg.sha256
+sudo installer -pkg dist/LightNode-Mac-Guard-0.2.0-alpha.18.pkg -target /
 ```
 
 然后：

@@ -17,12 +17,9 @@ func testEngine(t *testing.T, profile model.PolicyProfile, apiURL string) *Engin
 	t.Helper()
 	directory := t.TempDir()
 	document := Document{
-		Version:               1,
-		Mode:                  model.PolicyModeEnforce,
-		Profile:               profile,
-		AIProcessNames:        []string{"Claude", "ChatGPT"},
-		AIProcessPathPrefixes: []string{"/Applications/Claude.app/", "/Applications/ChatGPT.app/"},
-		AIDomainSuffixes:      []string{"claude.ai", "openai.com"},
+		Version: 1,
+		Mode:    model.PolicyModeEnforce,
+		Profile: profile,
 	}
 	data, err := json.Marshal(document)
 	if err != nil {
@@ -47,40 +44,13 @@ func testEngine(t *testing.T, profile model.PolicyProfile, apiURL string) *Engin
 	return engine
 }
 
-func connection(processPath, host, ip string) rawConnection {
-	var value rawConnection
-	value.ID = "connection-1"
-	value.Metadata.ProcessPath = processPath
-	value.Metadata.Host = host
-	value.Metadata.DestinationIP = ip
-	value.Metadata.DestinationPort = "443"
-	value.Metadata.Network = "tcp"
-	value.Start = time.Now().UTC()
-	value.Chains = []string{"ai-fixed"}
-	return value
-}
-
-func TestGlobalJapanClassification(t *testing.T) {
+func TestGlobalJapanHasNoConnectionClassification(t *testing.T) {
 	engine := testEngine(t, model.PolicyProfileGlobalJapan, "")
-	tests := []struct {
-		name       string
-		connection rawConnection
-		route      model.PolicyRoute
-		ai         bool
-	}{
-		{name: "Claude process", connection: connection("/Applications/Claude.app/Contents/MacOS/Claude (501)", "new.example", "203.0.113.1"), route: model.PolicyRouteAIFixed, ai: true},
-		{name: "browser AI domain", connection: connection("/Applications/Safari.app/Contents/MacOS/Safari", "chat.openai.com", "104.18.0.2"), route: model.PolicyRouteAIFixed},
-		{name: "China domain", connection: connection("/Applications/WeChat.app/Contents/MacOS/WeChat", "res.qq.com", "1.1.1.1"), route: model.PolicyRouteJapan},
-		{name: "foreign default", connection: connection("/Applications/Safari.app/Contents/MacOS/Safari", "www.youtube.com", "142.251.0.1"), route: model.PolicyRouteJapan},
-		{name: "IP-only default", connection: connection("/usr/bin/curl", "", "203.0.113.20"), route: model.PolicyRouteJapan},
+	if !engine.connectionCompliant("tokyo") {
+		t.Fatal("the single Tokyo outbound must be compliant")
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			actual := engine.classify(test.connection)
-			if actual.Disposition != test.route || actual.IsAIProcess != test.ai {
-				t.Fatalf("classification = %#v", actual)
-			}
-		})
+	if engine.connectionCompliant("direct") {
+		t.Fatal("any non-Tokyo outbound must be a violation")
 	}
 }
 
@@ -103,7 +73,7 @@ func TestClashAPIPoll(t *testing.T) {
 					"processPath": "/Applications/Claude.app/Contents/MacOS/Claude (501)",
 				},
 				"upload": 12, "download": 34, "start": time.Now().UTC(),
-				"chains": []string{"ai-fixed"}, "rule": "final",
+				"chains": []string{"tokyo"}, "rule": "final",
 			}},
 		})
 	}))
@@ -137,10 +107,7 @@ func TestLegacyObserveModeIsRejected(t *testing.T) {
 	data := []byte(`{
   "version": 1,
   "mode": "observe_safe",
-  "profile": "global_japan",
-  "aiProcessNames": ["Claude"],
-  "aiProcessPathPrefixes": ["/Applications/Claude.app/"],
-  "aiDomainSuffixes": ["claude.ai"]
+  "profile": "global_japan"
 }`)
 	if err := os.WriteFile(policyFile, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -155,8 +122,7 @@ func TestLegacyObserveModeIsRejected(t *testing.T) {
 
 func TestLegacyOutboundIsViolation(t *testing.T) {
 	engine := testEngine(t, model.PolicyProfileGlobalJapan, "")
-	result := engine.classify(connection("/usr/bin/curl", "example.com", "203.0.113.2"))
-	if engine.connectionCompliant(result, "vless-out") {
+	if engine.connectionCompliant("ai-fixed") || engine.connectionCompliant("vless-out") {
 		t.Fatal("legacy outbound must not satisfy the global Japan policy")
 	}
 }

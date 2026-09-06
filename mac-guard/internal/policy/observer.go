@@ -124,7 +124,6 @@ func (e *Engine) observe(connections []rawConnection, now time.Time) {
 	for _, connection := range connections {
 		processPath := sanitizeProcessPath(connection.Metadata.ProcessPath)
 		host := normalizeHost(connection.Metadata.Host)
-		result := e.classify(connection)
 		observedOutbound := strings.Join(connection.Chains, " > ")
 		active = append(active, model.PolicyConnection{
 			ID:               connection.ID,
@@ -133,11 +132,8 @@ func (e *Engine) observe(connections []rawConnection, now time.Time) {
 			DestinationIP:    connection.Metadata.DestinationIP,
 			DestinationPort:  connection.Metadata.DestinationPort,
 			Network:          connection.Metadata.Network,
-			Disposition:      result.Disposition,
 			ObservedOutbound: observedOutbound,
-			Reason:           result.Reason,
-			IsAIProcess:      result.IsAIProcess,
-			Compliant:        e.connectionCompliant(result, observedOutbound),
+			Compliant:        e.connectionCompliant(observedOutbound),
 			Upload:           connection.Upload,
 			Download:         connection.Download,
 			StartedAt:        connection.Start,
@@ -163,11 +159,6 @@ func (e *Engine) observe(connections []rawConnection, now time.Time) {
 	e.lastSuccessfulPoll = now
 }
 
-func (e *Engine) connectionCompliant(result classification, observedOutbound string) bool {
-	switch result.Disposition {
-	case model.PolicyRouteAIFixed, model.PolicyRouteJapan:
-		return strings.Contains(observedOutbound, "ai-fixed")
-	default:
-		return false
-	}
+func (e *Engine) connectionCompliant(observedOutbound string) bool {
+	return strings.Contains(observedOutbound, "tokyo")
 }

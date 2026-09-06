@@ -53,7 +53,7 @@ func main() {
 		Handler:           httpapi.New(controller, cfg.AdminUser, cfg.AdminPassword, cfg.DisableAuthentication),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      45 * time.Second,
+		WriteTimeout:      180 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	go func() {

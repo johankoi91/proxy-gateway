@@ -1,4 +1,4 @@
-import type { Snapshot } from "./types";
+import type { NodeConfiguration, NodeUpdate, Snapshot } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, cache: "no-store" });
@@ -14,5 +14,11 @@ export const api = {
   runTests: () => request<Snapshot>("/api/tests/run", { method: "POST" }),
   restart: () => request<Snapshot>("/api/actions/restart", { method: "POST" }),
   start: () => request<Snapshot>("/api/actions/start", { method: "POST" }),
-  pause: () => request<Snapshot>("/api/actions/pause", { method: "POST" })
+  pause: () => request<Snapshot>("/api/actions/pause", { method: "POST" }),
+  node: () => request<NodeConfiguration>("/api/node"),
+  updateNode: (configuration: NodeUpdate) => request<NodeConfiguration>("/api/node", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(configuration)
+  })
 };

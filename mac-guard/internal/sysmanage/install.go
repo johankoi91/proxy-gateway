@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"lightnode-mac-guard/internal/singconfig"
 )
 
 var legacyRuntimeTools = []string{
@@ -59,6 +61,9 @@ func (m *Manager) PostInstall(ctx context.Context) error {
 	if err := m.migrateConfigCommands(); err != nil {
 		return err
 	}
+	if err := m.migrateGlobalTokyoPolicy(); err != nil {
+		return err
+	}
 	for _, root := range []string{m.Paths.AppDir, m.Paths.LogDir} {
 		_ = filepath.Walk(root, func(path string, _ os.FileInfo, walkErr error) error {
 			if walkErr == nil {
@@ -69,6 +74,9 @@ func (m *Manager) PostInstall(ctx context.Context) error {
 	}
 	for _, name := range legacyRuntimeTools {
 		_ = os.Remove(filepath.Join("/usr/local/libexec", name))
+	}
+	for _, name := range []string{"DNS-DESIGN.md", "V2-SPLIT-ROUTING-DESIGN.md", "PROXY-VPN-CONFLICT-ISOLATION.md"} {
+		_ = os.Remove(filepath.Join(m.Paths.DocsDir, name))
 	}
 	if fileExists(m.Paths.Paused) {
 		_, _ = m.run(ctx, "/bin/launchctl", "disable", "system/"+singBoxLabel)
@@ -96,6 +104,33 @@ func (m *Manager) PostInstall(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (m *Manager) migrateGlobalTokyoPolicy() error {
+	data, err := os.ReadFile(m.Paths.SingBoxConfig)
+	if err != nil {
+		return err
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	if err := singconfig.EnforceGlobalTokyo(document); err != nil {
+		return err
+	}
+	updated, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(m.Paths.SingBoxConfig, append(updated, '\n'), 0o600); err != nil {
+		return err
+	}
+	policy := map[string]any{"version": 1, "mode": "enforce", "profile": "global_japan"}
+	policyData, err := json.MarshalIndent(policy, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(m.Paths.Policy, append(policyData, '\n'), 0o600)
 }
 
 func (m *Manager) migrateConfigCommands() error {

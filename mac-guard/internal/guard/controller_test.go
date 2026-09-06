@@ -2,9 +2,11 @@ package guard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +29,53 @@ func TestAllHealthy(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigurationIsSanitized(t *testing.T) {
+	directory := t.TempDir()
+	singBoxConfig := filepath.Join(directory, "sing-box.json")
+	singBoxJSON := `{
+  "dns":{"strategy":"ipv4_only","final":"dns-ai","servers":[{"type":"https","tag":"dns-ai","server":"104.16.249.249","server_port":443,"path":"/dns-query","detour":"tokyo","tls":{"server_name":"cloudflare-dns.com"}}]},
+  "inbounds":[{"type":"tun","tag":"tun-in","address":["172.19.0.1/30"],"mtu":1280,"dns_mode":"hijack","auto_route":true,"strict_route":true}],
+  "outbounds":[{"type":"vless","tag":"tokyo","server":"149.104.78.121","server_port":443,"uuid":"private-uuid-value","flow":"xtls-rprx-vision","tls":{"enabled":true,"server_name":"www.cloudflare.com","reality":{"public_key":"private-public-key","short_id":"private-short-id"},"utls":{"enabled":true,"fingerprint":"chrome"}}}]
+}`
+	if err := os.WriteFile(singBoxConfig, []byte(singBoxJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
+	cfg.SingBoxConfigFile = singBoxConfig
+	cfg.AdminPassword = "dashboard-secret-value"
+	cfg.V2ClashAPISecret = "observer-secret-value"
+	controller := NewController(cfg, ipv6Runner{}, "test")
+	payload, err := json.Marshal(controller.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(payload)
+	for _, secret := range []string{cfg.AdminPassword, cfg.V2ClashAPISecret, "private-uuid-value", "private-public-key", "private-short-id"} {
+		if strings.Contains(encoded, secret) {
+			t.Fatalf("runtime snapshot leaked secret %q", secret)
+		}
+	}
+	if controller.Snapshot().RuntimeConfig.VPSAddress != cfg.VPSAddress {
+		t.Fatal("sanitized runtime configuration is missing the VPS address")
+	}
+	if len(controller.Snapshot().RuntimeConfig.Components) != 6 || !strings.Contains(encoded, "172.19.0.1/30") || !strings.Contains(encoded, "xtls-rprx-vision") {
+		t.Fatal("sanitized runtime component configuration is incomplete")
+	}
+}
+
+func TestLaunchdPlistParsing(t *testing.T) {
+	plist := []byte(`<?xml version="1.0"?><plist><dict><key>Label</key><string>com.example.test</string><key>ProgramArguments</key><array><string>/usr/local/bin/example</string><string>-config</string><string>/Path With Spaces/config.json</string></array></dict></plist>`)
+	if actual := plistString(plist, "Label", "fallback"); actual != "com.example.test" {
+		t.Fatalf("label = %q", actual)
+	}
+	want := []string{"/usr/local/bin/example", "-config", "/Path With Spaces/config.json"}
+	actual := plistStringArray(plist, "ProgramArguments")
+	if strings.Join(actual, "|") != strings.Join(want, "|") {
+		t.Fatalf("arguments = %#v", actual)
+	}
+}
+
 func TestMergeHealthUsesWorstState(t *testing.T) {
 	merged := mergeHealth(
 		model.Component{Health: model.HealthHealthy, Summary: "DNS 正常"},
@@ -34,6 +83,25 @@ func TestMergeHealthUsesWorstState(t *testing.T) {
 	)
 	if merged.Health != model.HealthFailed {
 		t.Fatalf("health = %s", merged.Health)
+	}
+}
+
+func TestBuildStagesFollowArchitectureDataPath(t *testing.T) {
+	components := map[string]model.Component{
+		"network_conflict": {Health: model.HealthHealthy}, "firewall": {Health: model.HealthHealthy},
+		"tunnel": {Health: model.HealthHealthy}, "provider": {Health: model.HealthHealthy},
+		"dns": {Health: model.HealthHealthy}, "ipv6": {Health: model.HealthHealthy},
+		"transport": {Health: model.HealthHealthy}, "egress": {Health: model.HealthHealthy},
+	}
+	stages := buildStages(components)
+	want := []string{"network", "firewall", "tunnel", "provider", "dns", "vps", "egress"}
+	if len(stages) != len(want) {
+		t.Fatalf("stage count = %d", len(stages))
+	}
+	for index, expected := range want {
+		if stages[index].ID != expected {
+			t.Fatalf("stage %d = %q, want %q", index, stages[index].ID, expected)
+		}
 	}
 }
 

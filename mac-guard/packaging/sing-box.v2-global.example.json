@@ -15,7 +15,7 @@
           "enabled": true,
           "server_name": "cloudflare-dns.com"
         },
-        "detour": "ai-fixed"
+        "detour": "tokyo"
       }
     ],
     "strategy": "ipv4_only",
@@ -35,7 +35,7 @@
   "outbounds": [
     {
       "type": "vless",
-      "tag": "ai-fixed",
+      "tag": "tokyo",
       "server": "149.104.78.121",
       "server_port": 443,
       "uuid": "REPLACE_VLESS_UUID",
@@ -65,29 +65,9 @@
       {
         "inbound": ["tun-in"],
         "action": "sniff"
-      },
-      {
-        "process_path_regex": [
-          "^/Applications/(Claude|ChatGPT)\\.app/"
-        ],
-        "action": "route",
-        "outbound": "ai-fixed"
-      },
-      {
-        "domain_suffix": [
-          "claude.ai",
-          "claude.com",
-          "anthropic.com",
-          "chatgpt.com",
-          "openai.com",
-          "oaistatic.com",
-          "oaiusercontent.com"
-        ],
-        "action": "route",
-        "outbound": "ai-fixed"
       }
     ],
-    "final": "ai-fixed"
+    "final": "tokyo"
   },
   "experimental": {
     "clash_api": {

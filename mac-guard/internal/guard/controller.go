@@ -26,6 +26,7 @@ type Controller struct {
 	version             string
 	mu                  sync.RWMutex
 	checkMu             sync.Mutex
+	nodeUpdateMu        sync.Mutex
 	snapshot            model.Snapshot
 	events              []model.Event
 	eventID             atomic.Int64
@@ -49,6 +50,7 @@ func NewController(cfg config.Config, runner Runner, version string) *Controller
 		snapshot: model.Snapshot{
 			Version: version, State: model.StateBootLocked, StateSince: now,
 			Provider: cfg.ProviderName, ExpectedEgress: cfg.ExpectedEgressIP,
+			RuntimeConfig: runtimeConfiguration(cfg),
 		},
 	}
 	controller.loadEvents()
@@ -300,7 +302,7 @@ func policyAlerts(snapshot model.PolicyV2Snapshot) []model.Alert {
 	}
 	if snapshot.ViolationCount > 0 {
 		alerts = append(alerts, model.Alert{
-			ID: "policy_v2_violation", Severity: "critical", Title: "AI 策略违例",
+			ID: "policy_v2_violation", Severity: "critical", Title: "东京出口违例",
 			Message:   fmt.Sprintf("发现 %d 条活动连接未经过期望出口。", snapshot.ViolationCount),
 			Component: "policy_v2", RaisedAt: now,
 		})
@@ -314,7 +316,7 @@ func (c *Controller) policyViolationObserved(connection model.PolicyConnection) 
 		target = connection.DestinationIP
 	}
 	c.mu.Lock()
-	c.addEventLocked("critical", "policy_v2", fmt.Sprintf("策略违例: %s -> %s 未经过期望出口", filepath.Base(connection.ProcessPath), target))
+	c.addEventLocked("critical", "policy_v2", fmt.Sprintf("东京出口违例: %s -> %s 未经过 tokyo 出站", filepath.Base(connection.ProcessPath), target))
 	c.mu.Unlock()
 }
 
@@ -440,6 +442,7 @@ func (c *Controller) apply(output checkOutput) {
 			Message: "PF Kill Switch 仍在阻断本地公网回落。", Component: "provider", RaisedAt: now,
 		}}
 	}
+	runtimeConfig := runtimeConfiguration(c.cfg)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	previousComponents := make(map[string]model.Component, len(c.snapshot.Components))
@@ -490,6 +493,7 @@ func (c *Controller) apply(output checkOutput) {
 	c.snapshot.Tests = output.tests
 	c.snapshot.Alerts = alerts
 	c.snapshot.Events = append([]model.Event(nil), c.events...)
+	c.snapshot.RuntimeConfig = runtimeConfig
 }
 
 func expectedPausedComponent(id string) bool {
@@ -585,13 +589,13 @@ func legacyPolicyEvent(event model.Event) bool {
 
 func buildStages(byID map[string]model.Component) []model.Stage {
 	return []model.Stage{
-		stage("network", "网络边界", mergeHealth(byID["network_conflict"], byID["transport"])),
+		stage("network", "网络边界", byID["network_conflict"]),
 		stage("firewall", "PF 边界", byID["firewall"]),
 		stage("tunnel", "TUN", byID["tunnel"]),
 		stage("provider", "sing-box", byID["provider"]),
+		stage("dns", "DNS / IPv6", mergeHealth(byID["dns"], byID["ipv6"])),
 		stage("vps", "VPS 传输", byID["transport"]),
 		stage("egress", "固定出口", byID["egress"]),
-		stage("dns", "DNS / IPv6", mergeHealth(byID["dns"], byID["ipv6"])),
 	}
 }
 

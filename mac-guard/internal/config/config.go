@@ -8,6 +8,7 @@ import (
 )
 
 type Config struct {
+	ConfigFilePath               string   `json:"-"`
 	Version                      int      `json:"version"`
 	ListenAddress                string   `json:"listenAddress"`
 	AdminUser                    string   `json:"adminUser"`
@@ -58,6 +59,7 @@ type Config struct {
 func Default() Config {
 	const guardBinary = "/usr/local/libexec/lightnode-guard"
 	return Config{
+		ConfigFilePath:        "/Library/Application Support/LightNodeGuard/config.json",
 		Version:               1,
 		ListenAddress:         "127.0.0.1:9180",
 		AdminUser:             "admin",
@@ -114,6 +116,7 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	cfg.ConfigFilePath = path
 	if cfg.Version != 1 {
 		return Config{}, fmt.Errorf("unsupported config version %d", cfg.Version)
 	}

@@ -49,12 +49,6 @@ export interface GuardEvent {
 
 export type PolicyMode = "enforce";
 export type PolicyProfile = "global_japan";
-export type PolicyRoute = "ai_fixed" | "japan";
-
-export interface PolicyRouteSummary {
-  route: PolicyRoute;
-  count: number;
-}
 
 export interface PolicyConnection {
   id: string;
@@ -63,10 +57,7 @@ export interface PolicyConnection {
   destinationIp?: string;
   destinationPort: string;
   network: string;
-  disposition: PolicyRoute;
   observedOutbound?: string;
-  reason: string;
-  isAiProcess: boolean;
   compliant: boolean;
   upload: number;
   download: number;
@@ -82,8 +73,70 @@ export interface PolicyV2Snapshot {
   lastPollAt?: string;
   lastSuccessfulPollAt?: string;
   activeConnections: PolicyConnection[];
-  routeSummary: PolicyRouteSummary[];
   violationCount: number;
+}
+
+export interface RuntimeConfiguration {
+  profile: string;
+  transport: string;
+  vpsAddress: string;
+  vpsPort: number;
+  expectedEgress: string;
+  tunnelAddress: string;
+  tunnelInterfacePrefix: string;
+  expectedDnsServers: string[];
+  pfAnchor: string;
+  pfAnchorFile: string;
+  pfMainConfigFile: string;
+  guardService: string;
+  providerService: string;
+  listenAddress: string;
+  authenticationEnabled: boolean;
+  checkIntervalSeconds: number;
+  conflictCheckIntervalSeconds: number;
+  observerUrl: string;
+  observerIntervalSeconds: number;
+  components: RuntimeComponentConfiguration[];
+}
+
+export interface RuntimeComponentConfiguration {
+  id: string;
+  name: string;
+  owner: string;
+  launchdLabel?: string;
+  executable?: string;
+  arguments?: string[];
+  settings: RuntimeSetting[];
+  healthComponentIds: string[];
+}
+
+export interface RuntimeSetting {
+  name: string;
+  value: string;
+}
+
+export interface NodeConfiguration {
+  server: string;
+  port: number;
+  expectedEgress: string;
+  flow: string;
+  tlsServerName: string;
+  utlsFingerprint: string;
+  uuidConfigured: boolean;
+  realityPublicKeyConfigured: boolean;
+  realityShortIdConfigured: boolean;
+}
+
+export interface NodeUpdate {
+  server: string;
+  port: number;
+  expectedEgress: string;
+  flow: string;
+  tlsServerName: string;
+  utlsFingerprint: string;
+  uuid?: string;
+  realityPublicKey?: string;
+  realityShortId?: string;
 }
 
 export interface Snapshot {
@@ -107,4 +160,5 @@ export interface Snapshot {
   alerts: Alert[];
   events: GuardEvent[];
   policyV2?: PolicyV2Snapshot;
+  runtimeConfig: RuntimeConfiguration;
 }

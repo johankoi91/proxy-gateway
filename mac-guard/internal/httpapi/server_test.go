@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"lightnode-mac-guard/internal/config"
@@ -80,10 +82,7 @@ func TestV2PolicyEndpoint(t *testing.T) {
 	policyJSON := `{
   "version": 1,
   "mode": "enforce",
-  "profile": "global_japan",
-  "aiProcessNames": ["Claude"],
-  "aiProcessPathPrefixes": ["/Applications/Claude.app/"],
-  "aiDomainSuffixes": ["claude.ai"]
+  "profile": "global_japan"
 }`
 	if err := os.WriteFile(policyFile, []byte(policyJSON), 0o600); err != nil {
 		t.Fatal(err)
@@ -115,5 +114,36 @@ func TestLifecycleEndpointsArePostOnly(t *testing.T) {
 		if response.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("GET %s status = %d", path, response.Code)
 		}
+	}
+}
+
+func TestNodeEndpointReturnsSanitizedConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.json")
+	singBoxPath := filepath.Join(directory, "sing-box.json")
+	cfg := config.Default()
+	cfg.ConfigFilePath = configPath
+	cfg.SingBoxConfigFile = singBoxPath
+	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
+	configData, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	singBox := `{"outbounds":[{"type":"vless","server":"149.104.78.121","server_port":443,"uuid":"must-not-leak","flow":"xtls-rprx-vision","tls":{"server_name":"www.cloudflare.com","reality":{"public_key":"must-not-leak-key","short_id":"aabbccdd"},"utls":{"fingerprint":"chrome"}}}]}`
+	if err := os.WriteFile(singBoxPath, []byte(singBox), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controller := guard.NewController(cfg, failingRunner{}, "test")
+	handler := New(controller, "", "", true)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/node", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "must-not-leak") {
+		t.Fatalf("node response leaked credentials: %s", response.Body.String())
 	}
 }

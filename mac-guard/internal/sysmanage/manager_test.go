@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -98,6 +99,52 @@ func TestConfigCommandMigration(t *testing.T) {
 	expected := []any{"/test/lightnode-guard", "tunnel", "pause"}
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("pause command = %#v", actual)
+	}
+}
+
+func TestGlobalTokyoMigrationPreservesCredentials(t *testing.T) {
+	directory := t.TempDir()
+	singBoxPath := filepath.Join(directory, "sing-box.json")
+	policyPath := filepath.Join(directory, "policy.json")
+	input := `{
+  "dns":{"servers":[{"type":"https","detour":"ai-fixed"}]},
+  "outbounds":[{"type":"vless","tag":"ai-fixed","uuid":"keep-uuid","tls":{"reality":{"public_key":"keep-key","short_id":"keep-short"}}}],
+  "route":{"rules":[{"protocol":"dns","action":"hijack-dns"},{"process_path_regex":["Claude"],"outbound":"ai-fixed"},{"domain_suffix":["openai.com"],"outbound":"ai-fixed"}],"final":"ai-fixed"},
+  "experimental":{"clash_api":{"secret":"keep-secret"}}
+}`
+	if err := os.WriteFile(singBoxPath, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, []byte(`{"version":1,"mode":"enforce","profile":"global_japan","aiProcessNames":["Claude"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := New(nil)
+	manager.Paths.SingBoxConfig = singBoxPath
+	manager.Paths.Policy = policyPath
+	if err := manager.migrateGlobalTokyoPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(singBoxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(updated)
+	for _, expected := range []string{"keep-uuid", "keep-key", "keep-short", "keep-secret", `"tag": "tokyo"`, `"detour": "tokyo"`, `"final": "tokyo"`} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("migrated config lost %q: %s", expected, text)
+		}
+	}
+	for _, removed := range []string{"ai-fixed", "process_path_regex", "domain_suffix"} {
+		if strings.Contains(text, removed) {
+			t.Fatalf("migrated config retained %q: %s", removed, text)
+		}
+	}
+	policy, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(policy), "aiProcess") {
+		t.Fatalf("classification rules remain in policy: %s", policy)
 	}
 }
 
