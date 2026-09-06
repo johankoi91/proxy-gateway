@@ -89,6 +89,26 @@ func (m *Manager) DisablePhysicalIPv6(ctx context.Context) error {
 	return nil
 }
 
+func (m *Manager) RestorePhysicalIPv6(ctx context.Context) error {
+	if err := m.requireRoot(); err != nil {
+		return err
+	}
+	physical, err := m.physicalInterface(ctx)
+	if err != nil {
+		return err
+	}
+	service, err := m.networkService(ctx, physical)
+	if err != nil {
+		return err
+	}
+	if _, err := m.run(ctx, "/usr/sbin/networksetup", "-setv6automatic", service); err != nil {
+		return err
+	}
+	m.log(ctx, fmt.Sprintf("Restored automatic IPv6 on %s (%s)", service, physical))
+	m.printf("network_service=%s physical_interface=%s ipv6=automatic\n", service, physical)
+	return nil
+}
+
 func (m *Manager) RemediateConflicts(ctx context.Context) error {
 	if err := m.requireRoot(); err != nil {
 		return err

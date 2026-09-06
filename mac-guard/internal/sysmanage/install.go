@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,10 @@ import (
 	"lightnode-mac-controller/internal/singconfig"
 )
 
-const controllerLabel = "com.lightnode.controller"
+const (
+	controllerLabel   = "com.lightnode.controller"
+	packageIdentifier = "com.lightnode.mac-controller"
+)
 
 func (m *Manager) PostInstall(ctx context.Context) error {
 	if err := m.requireRoot(); err != nil {
@@ -152,7 +157,11 @@ func (m *Manager) normalizeConfiguration() error {
 	}
 	experimental := singconfig.Object(singDocument, "experimental")
 	connectionAPI := singconfig.Object(experimental, "clash_api")
-	connectionAPI["external_controller"] = cfg.ConnectionAPIURL
+	connectionListenAddress, err := connectionAPIListenAddress(cfg.ConnectionAPIURL)
+	if err != nil {
+		return err
+	}
+	connectionAPI["external_controller"] = connectionListenAddress
 	connectionAPI["secret"] = cfg.ConnectionAPISecret
 	connectionAPI["access_control_allow_origin"] = []string{"http://" + cfg.ListenAddress}
 	connectionAPI["access_control_allow_private_network"] = false
@@ -168,6 +177,20 @@ func (m *Manager) normalizeConfiguration() error {
 		return err
 	}
 	return writeFileAtomic(m.Paths.SingBoxConfig, append(updatedSing, '\n'), 0o600)
+}
+
+func connectionAPIListenAddress(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid loopback connection API URL %q", rawURL)
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	if parsed.Scheme != "http" || parsed.Host == "" || parsed.Path != "" ||
+		(host != "localhost" && (ip == nil || !ip.IsLoopback())) {
+		return "", fmt.Errorf("invalid loopback connection API URL %q", rawURL)
+	}
+	return parsed.Host, nil
 }
 
 func (m *Manager) validateInstalledPayload() error {
@@ -198,29 +221,73 @@ func (m *Manager) secureLogFiles() {
 	}
 }
 
-func (m *Manager) Uninstall(ctx context.Context, purge bool) error {
+func (m *Manager) Uninstall(ctx context.Context, confirmed bool) error {
 	if err := m.requireRoot(); err != nil {
 		return err
 	}
-	if fileExists(m.Paths.Committed) {
-		return errors.New("refusing uninstall while the Kill Switch is committed; run: sudo /usr/local/libexec/lightnode-controller firewall disable --yes")
+	if !confirmed {
+		return errors.New("uninstall permanently removes the tunnel, PF rules, configuration, backups and logs; repeat with --yes")
 	}
-	_ = m.RefreshDNS(ctx, true)
-	for _, label := range []string{controllerLabel, singBoxLabel, "com.lightnode.pf-bootstrap", regressionRecoveryLabel} {
+	if fileExists(m.Paths.RegressionState) {
+		return errors.New("cannot uninstall while a live regression recovery is armed; run regression recover first")
+	}
+	tokenFile := filepath.Join(m.Paths.RollbackState, "token")
+	if token, err := os.ReadFile(tokenFile); err == nil {
+		if err := m.RollbackFirewall(ctx, strings.TrimSpace(string(token)), 0); err != nil {
+			return fmt.Errorf("rollback active PF trial: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	m.quitProtectedApps(ctx)
+	if uid, ok := consoleUID(); ok {
+		_, _ = m.run(ctx, "/bin/launchctl", "bootout", fmt.Sprintf("gui/%d/com.openai.chat-helper", uid))
+	}
+	_, _ = m.run(ctx, "/bin/launchctl", "disable", "system/"+singBoxLabel)
+	_, _ = m.run(ctx, "/bin/launchctl", "bootout", "system/"+singBoxLabel)
+	if err := m.RefreshDNS(ctx, true); err != nil {
+		return fmt.Errorf("restore automatic DNS: %w", err)
+	}
+	if err := m.RestorePhysicalIPv6(ctx); err != nil {
+		return fmt.Errorf("restore automatic IPv6: %w", err)
+	}
+	if managedFirewallPresent(m.Paths.PFConfig, m.Paths.PFAnchor) || fileExists(m.Paths.Committed) {
+		if err := m.DisableFirewall(ctx, true); err != nil {
+			return fmt.Errorf("remove managed PF rules: %w", err)
+		}
+	}
+
+	for _, label := range []string{
+		controllerLabel, singBoxLabel, "com.lightnode.pf-bootstrap",
+		"com.lightnode.vless-killswitch-rollback", regressionRecoveryLabel,
+	} {
 		_, _ = m.run(ctx, "/bin/launchctl", "bootout", "system/"+label)
 	}
-	for _, path := range []string{m.Paths.ControllerPlist, m.Paths.PFBootstrapPlist, m.Paths.SingBoxPlist, m.Paths.SingBoxBinary, m.Paths.RegressionPlist} {
+	for _, path := range []string{
+		m.Paths.ControllerPlist, m.Paths.PFBootstrapPlist, m.Paths.SingBoxPlist,
+		m.Paths.RollbackPlist, m.Paths.RegressionPlist, m.Paths.SingBoxBinary,
+		m.Paths.PFAnchor,
+	} {
 		_ = os.Remove(path)
 	}
+	_ = os.RemoveAll(m.Paths.AppDir)
+	_ = os.RemoveAll(m.Paths.LogDir)
 	_ = os.RemoveAll(m.Paths.TemplatesDir)
+	_ = os.Remove(filepath.Dir(m.Paths.TemplatesDir))
 	_ = os.RemoveAll(m.Paths.DocsDir)
-	if purge {
-		_ = os.RemoveAll(m.Paths.AppDir)
-		_ = os.RemoveAll(m.Paths.LogDir)
-	}
-	m.printf("LightNode Controller and sing-box binaries removed. PF rules were not modified.\n")
+	_, _ = m.run(ctx, "/usr/sbin/pkgutil", "--forget", packageIdentifier)
+	m.printf("LightNode Controller fully removed; automatic DNS and IPv6 restored.\n")
 	if err := os.Remove(m.Paths.ControllerBinary); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove controller binary: %w", err)
 	}
 	return nil
+}
+
+func managedFirewallPresent(configPath, anchorPath string) bool {
+	if fileExists(anchorPath) {
+		return true
+	}
+	data, err := os.ReadFile(configPath)
+	return err == nil && strings.Contains(string(data), managedBegin)
 }

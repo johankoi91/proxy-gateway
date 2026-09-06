@@ -1,6 +1,6 @@
 # LightNode Mac Controller
 
-> 当前候选版本：`0.2.0-alpha.20`。
+> 当前候选版本：`0.2.0-alpha.21`。
 
 这是 `proxy-gateway` 下独立开发的 macOS 固定出口工程。目标是把开发 Mac
 的公网流量固定到东京 VPS `149.104.78.121`，并在隧道故障时保持断网，而不是
@@ -140,7 +140,7 @@ make pkg
 输出：
 
 ```text
-dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg
+dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg
 ```
 
 安装包内只有 `lightnode-controller`、固定版本 sing-box、launchd 配置、模板和文档。
@@ -149,7 +149,7 @@ dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg
 原生安装包可双击安装，或使用：
 
 ```bash
-sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg -target /
+sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg -target /
 ```
 
 默认构建为未签名开发包；设置 `PKG_SIGN_IDENTITY` 后，`make pkg` 会使用对应的
@@ -162,8 +162,8 @@ PKG 新装时只启动管理服务，不会直接启用 PF；配置仍为占位�
 sing-box：
 
 ```bash
-shasum -a 256 -c dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg.sha256
-sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg -target /
+shasum -a 256 -c dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg.sha256
+sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg -target /
 ```
 
 然后：
@@ -191,8 +191,13 @@ sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.20.pkg -target /
 sudo /usr/local/libexec/lightnode-controller firewall disable --yes
 ```
 
-卸载器在 Kill Switch 已确认时会拒绝继续，避免先停 sing-box 后把机器留在不可
-恢复的断网状态。
+完整卸载必须显式确认。卸载器先停止业务 App 和 sing-box，在 PF 仍然阻断公网回落
+时恢复自动 DNS 与 IPv6；随后移除受控 PF、launchd 服务、二进制、安装收据、配置、
+备份和日志：
+
+```bash
+sudo /usr/local/libexec/lightnode-controller uninstall --yes
+```
 
 ## API
 

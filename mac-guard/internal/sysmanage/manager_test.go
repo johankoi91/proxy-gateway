@@ -2,6 +2,7 @@ package sysmanage
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,15 @@ func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([
 	if name == "/sbin/pfctl" && reflect.DeepEqual(args, []string{"-s", "info"}) {
 		return []byte("Status: Disabled\n"), nil
 	}
+	if name == "/usr/sbin/scutil" && reflect.DeepEqual(args, []string{"--nwi"}) {
+		return []byte("Network interfaces: en0\n"), nil
+	}
+	if name == "/usr/sbin/networksetup" && reflect.DeepEqual(args, []string{"-listnetworkserviceorder"}) {
+		return []byte("(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n"), nil
+	}
+	if name == "/usr/bin/pgrep" {
+		return nil, errors.New("not running")
+	}
 	return nil, nil
 }
 
@@ -44,6 +54,18 @@ func TestNetworkParsers(t *testing.T) {
 	route := "   gateway: 172.19.0.1\n interface: utun8\n"
 	if actual := routeInterface(route); actual != "utun8" {
 		t.Fatalf("route interface = %q", actual)
+	}
+}
+
+func TestConnectionAPIListenAddress(t *testing.T) {
+	address, err := connectionAPIListenAddress("http://127.0.0.1:9090")
+	if err != nil || address != "127.0.0.1:9090" {
+		t.Fatalf("address=%q err=%v", address, err)
+	}
+	for _, value := range []string{"127.0.0.1:9090", "https://127.0.0.1:9090", "http://127.0.0.1:9090/path", "http://example.com:9090"} {
+		if _, err := connectionAPIListenAddress(value); err == nil {
+			t.Fatalf("invalid URL accepted: %q", value)
+		}
 	}
 }
 
@@ -125,5 +147,68 @@ func TestCommandRecognition(t *testing.T) {
 	}
 	if IsCommand("daemon") {
 		t.Fatal("daemon flags must stay on the default code path")
+	}
+}
+
+func TestFullUninstallRequiresConfirmationAndRemovesState(t *testing.T) {
+	directory := t.TempDir()
+	paths := Paths{
+		AppDir: filepath.Join(directory, "app"), LogDir: filepath.Join(directory, "logs"),
+		TemplatesDir: filepath.Join(directory, "templates"), DocsDir: filepath.Join(directory, "docs"),
+		Config: filepath.Join(directory, "app", "config.json"), SingBoxConfig: filepath.Join(directory, "app", "sing-box.json"),
+		Paused: filepath.Join(directory, "app", "paused"), Committed: filepath.Join(directory, "app", "firewall.committed"),
+		RollbackState: filepath.Join(directory, "app", "rollback"), RegressionState: filepath.Join(directory, "app", "regression.json"),
+		PFConfig: filepath.Join(directory, "pf.conf"), PFAnchor: filepath.Join(directory, "pf.anchor"),
+		RollbackPlist: filepath.Join(directory, "rollback.plist"), RegressionPlist: filepath.Join(directory, "regression.plist"),
+		ControllerPlist: filepath.Join(directory, "controller.plist"), SingBoxPlist: filepath.Join(directory, "sing-box.plist"),
+		PFBootstrapPlist: filepath.Join(directory, "pf-bootstrap.plist"),
+		ControllerBinary: filepath.Join(directory, "lightnode-controller"), SingBoxBinary: filepath.Join(directory, "sing-box"),
+	}
+	for _, path := range []string{paths.AppDir, paths.LogDir, paths.TemplatesDir, paths.DocsDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{
+		paths.Config, paths.SingBoxConfig, paths.Committed, paths.PFAnchor,
+		paths.ControllerPlist, paths.SingBoxPlist, paths.PFBootstrapPlist,
+		paths.RollbackPlist, paths.ControllerBinary, paths.SingBoxBinary,
+	} {
+		if err := os.WriteFile(path, []byte("test\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(paths.PFConfig, []byte(managedBegin+"\n"+managedEnd+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &recordingRunner{}
+	manager := New(runner)
+	manager.EUID = func() int { return 0 }
+	manager.Paths = paths
+	if err := manager.Uninstall(context.Background(), false); err == nil {
+		t.Fatal("unconfirmed uninstall must be rejected")
+	}
+	if err := manager.Uninstall(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		paths.AppDir, paths.LogDir, paths.TemplatesDir, paths.DocsDir,
+		paths.ControllerBinary, paths.SingBoxBinary, paths.PFAnchor,
+		paths.ControllerPlist, paths.SingBoxPlist, paths.PFBootstrapPlist,
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("uninstall left %s", path)
+		}
+	}
+	commands := strings.Join(runner.commands, "\n")
+	for _, expected := range []string{
+		"/usr/sbin/networksetup -setdnsservers Wi-Fi empty",
+		"/usr/sbin/networksetup -setv6automatic Wi-Fi",
+		"/usr/sbin/pkgutil --forget " + packageIdentifier,
+	} {
+		if !strings.Contains(commands, expected) {
+			t.Fatalf("uninstall did not run %q:\n%s", expected, commands)
+		}
 	}
 }

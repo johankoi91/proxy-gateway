@@ -102,7 +102,10 @@ func (m *Manager) RunCLI(ctx context.Context, args []string) error {
 			return m.PostInstall(ctx)
 		}
 	case "uninstall":
-		return m.Uninstall(ctx, hasFlag(args[1:], "--purge"))
+		if len(args) != 2 || args[1] != "--yes" {
+			return fmt.Errorf("usage: lightnode-controller uninstall --yes")
+		}
+		return m.Uninstall(ctx, true)
 	case "regression":
 		if len(args) >= 2 && args[1] == "recover" {
 			delay := 0

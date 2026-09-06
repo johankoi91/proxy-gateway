@@ -15,8 +15,8 @@
 校验并安装：
 
 ```bash
-shasum -a 256 -c LightNode-Mac-Controller-0.2.0-alpha.20.pkg.sha256
-sudo installer -pkg LightNode-Mac-Controller-0.2.0-alpha.20.pkg -target /
+shasum -a 256 -c LightNode-Mac-Controller-0.2.0-alpha.21.pkg.sha256
+sudo installer -pkg LightNode-Mac-Controller-0.2.0-alpha.21.pkg -target /
 ```
 
 新装时配置仍包含占位符，因此只启动 Controller，不启动 sing-box，也不启用 PF。
@@ -104,7 +104,7 @@ sudo /usr/local/libexec/lightnode-controller tunnel pause
 ```text
 确认 firewall.committed
   -> 写入 safely-paused
-  -> 请求 Claude / ChatGPT 正常退出
+  -> 请求 Claude / ChatGPT 正常退出并停止 ChatGPT helper
   -> 禁用并卸载 sing-box launchd
   -> 确认 sing-box 停止
   -> 保留 PF
@@ -215,7 +215,7 @@ alerts=[]
 `events.jsonl` 记录状态变化、自动恢复、策略违例和暂停结果，不记录消息正文、Token、
 Cookie 或数据包载荷。上述日志达到 5 MiB 时轮转，默认保留 `.1` 到 `.3`。
 
-## 10. 解除保护与卸载
+## 10. 解除保护与完整卸载
 
 解除 PF 会允许 Wi-Fi 公网直连，只能由 root 显式执行：
 
@@ -223,19 +223,29 @@ Cookie 或数据包载荷。上述日志达到 5 MiB 时轮转，默认保留 `.
 sudo /usr/local/libexec/lightnode-controller firewall disable --yes
 ```
 
-卸载但保留配置和日志：
+产品只提供一种完整卸载，不保留旧配置或兼容状态：
 
 ```bash
-sudo /usr/local/libexec/lightnode-controller uninstall
+sudo /usr/local/libexec/lightnode-controller uninstall --yes
 ```
 
-同时删除配置和日志：
+卸载顺序：
 
-```bash
-sudo /usr/local/libexec/lightnode-controller uninstall --purge
+```text
+拒绝未确认请求
+  -> 拒绝正在进行的故障注入测试
+  -> 回滚尚未确认的 PF 试运行
+  -> 请求 Claude / ChatGPT 正常退出
+  -> 停止 sing-box
+  -> PF 仍生效时恢复自动 DNS 与 IPv6
+  -> 删除受控 PF 规则和 Anchor
+  -> 卸载全部 launchd 服务
+  -> 删除二进制、plist、配置、备份、日志、模板和文档
+  -> pkgutil --forget com.lightnode.mac-controller
 ```
 
-如果 `firewall.committed` 仍存在，卸载会拒绝执行，避免先停隧道后留下不可控状态。
+完成后 macOS 恢复普通网络能力。卸载命令没有“保留配置”模式；需要迁移节点时应先
+从 VPS 后台重新下载 `*.vps-config.json`，不要依赖旧 Mac 的运行目录。
 
 ## 11. 更换东京节点
 

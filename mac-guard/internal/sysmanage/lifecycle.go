@@ -89,8 +89,7 @@ func (m *Manager) PauseTunnel(ctx context.Context) error {
 	if err := writeFileAtomic(m.Paths.Paused, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
 		return err
 	}
-	m.quitGUIApp(ctx, "Claude", `/Claude\.app/`)
-	m.quitGUIApp(ctx, "ChatGPT", `/ChatGPT\.app/`)
+	m.quitProtectedApps(ctx)
 	if _, err := m.run(ctx, "/bin/launchctl", "disable", "system/"+singBoxLabel); err != nil {
 		return err
 	}
@@ -101,6 +100,19 @@ func (m *Manager) PauseTunnel(ctx context.Context) error {
 	m.log(ctx, "Tokyo tunnel safely paused; PF remains fail-closed")
 	m.printf("Tokyo tunnel paused. PF Kill Switch remains active.\n")
 	return nil
+}
+
+func (m *Manager) quitProtectedApps(ctx context.Context) {
+	for _, app := range []struct {
+		name    string
+		pattern string
+	}{
+		{name: "Claude", pattern: `/Claude\.app/`},
+		{name: "ChatGPT", pattern: `/ChatGPT\.app/`},
+		{name: "ChatGPT Classic", pattern: `/ChatGPT Classic\.app/`},
+	} {
+		m.quitGUIApp(ctx, app.name, app.pattern)
+	}
 }
 
 func (m *Manager) RestartTunnel(ctx context.Context) error {
