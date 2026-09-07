@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -27,10 +26,12 @@ type Controller struct {
 	mu                  sync.RWMutex
 	logMu               sync.Mutex
 	checkMu             sync.Mutex
-	nodeUpdateMu        sync.Mutex
+	operationMu         sync.Mutex
+	actionMu            sync.RWMutex
 	snapshot            model.Snapshot
 	events              []model.Event
 	eventID             atomic.Int64
+	actionID            atomic.Int64
 	lastPFRepair        atomic.Int64
 	lastDNSRepair       atomic.Int64
 	lastConflictRepair  atomic.Int64
@@ -38,6 +39,9 @@ type Controller struct {
 	startedAt           time.Time
 	connectionObserver  *observer.Observer
 	observerInitError   string
+	currentAction       *model.LifecycleAction
+	actions             map[string]model.LifecycleAction
+	actionOrder         []string
 }
 
 func NewController(cfg config.Config, runner Runner, version string) *Controller {
@@ -48,6 +52,7 @@ func NewController(cfg config.Config, runner Runner, version string) *Controller
 		checker:   newChecker(cfg, runner),
 		version:   version,
 		startedAt: now,
+		actions:   make(map[string]model.LifecycleAction),
 		snapshot: model.Snapshot{
 			Version: version, State: model.StateBootLocked, StateSince: now,
 			Provider: cfg.ProviderName, ExpectedEgress: cfg.ExpectedEgressIP,
@@ -56,6 +61,7 @@ func NewController(cfg config.Config, runner Runner, version string) *Controller
 	}
 	controller.rotateLogs()
 	controller.loadEvents()
+	controller.loadLifecycleAction()
 	connectionObserver, err := observer.New(observer.Options{
 		APIURL: cfg.ConnectionAPIURL, APISecret: cfg.ConnectionAPISecret,
 		PollInterval: time.Duration(cfg.ConnectionPollIntervalSeconds) * time.Second,
@@ -72,6 +78,7 @@ func NewController(cfg config.Config, runner Runner, version string) *Controller
 
 func (c *Controller) Start(ctx context.Context) {
 	go func() {
+		c.resumeLifecycleAction()
 		c.CheckNow(ctx)
 		ticker := time.NewTicker(c.cfg.CheckInterval())
 		defer ticker.Stop()
@@ -125,9 +132,18 @@ func (c *Controller) CheckNow(parent context.Context) model.Snapshot {
 	defer cancel()
 	output := c.checker.run(ctx)
 	c.apply(output)
+	c.reconcileAfterCheck(output)
+	c.setChecking(false)
+	return c.Snapshot()
+}
+
+func (c *Controller) reconcileAfterCheck(output checkOutput) {
 	if c.safelyPaused() {
-		c.setChecking(false)
-		return c.Snapshot()
+		c.maybeRepairFirewall(output)
+		if c.Snapshot().State == model.StateInconsistentLocked {
+			_, _ = c.QueueLifecycleAction("pause")
+		}
+		return
 	}
 	if componentIsUnhealthy(output, "network_conflict") {
 		c.maybeRepairNetworkConflict(output)
@@ -135,8 +151,6 @@ func (c *Controller) CheckNow(parent context.Context) model.Snapshot {
 		c.maybeRepairFirewall(output)
 		c.maybeRepairDNS(output)
 	}
-	c.setChecking(false)
-	return c.Snapshot()
 }
 
 func (c *Controller) safelyPaused() bool {
@@ -268,10 +282,11 @@ func (c *Controller) maybeRepairFirewall(output checkOutput) {
 
 func (c *Controller) Snapshot() model.Snapshot {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	b, _ := json.Marshal(c.snapshot)
+	c.mu.RUnlock()
 	var out model.Snapshot
 	_ = json.Unmarshal(b, &out)
+	out.Action = c.CurrentLifecycleAction()
 	if c.connectionObserver != nil {
 		connectionSnapshot := c.connectionObserver.Snapshot()
 		out.Connections = connectionSnapshot
@@ -317,81 +332,10 @@ func (c *Controller) connectionViolationObserved(connection model.ObservedConnec
 	c.mu.Unlock()
 }
 
-func (c *Controller) RestartTunnel(parent context.Context) error {
-	if c.safelyPaused() {
-		return errors.New("保护已安全暂停，请使用启动保护")
-	}
-	if len(c.cfg.RecoveryCommand) == 0 {
-		return fmt.Errorf("recoveryCommand is not configured")
-	}
-	c.mu.Lock()
-	c.snapshot.Recovering = true
-	c.transitionLocked(model.StateRecovering, "controller", "正在执行隧道恢复命令")
-	c.mu.Unlock()
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-	defer cancel()
-	_, err := c.runner.Run(ctx, c.cfg.RecoveryCommand[0], c.cfg.RecoveryCommand[1:]...)
-	c.mu.Lock()
-	c.snapshot.Recovering = false
-	if err != nil {
-		c.addEventLocked("error", "provider", "隧道恢复失败: "+err.Error())
-	} else {
-		c.addEventLocked("info", "provider", "隧道恢复命令执行完成")
-	}
-	c.mu.Unlock()
-	if err == nil {
-		time.Sleep(2 * time.Second)
-		c.CheckNow(parent)
-	}
-	return err
-}
-
-func (c *Controller) StartTunnel(parent context.Context) error {
-	return c.runTunnelAction(parent, c.cfg.StartCommand, "正在启动东京保护", "东京保护启动完成", "东京保护启动失败")
-}
-
-func (c *Controller) PauseTunnel(parent context.Context) error {
-	if !c.snapshotProtected() {
-		return errors.New("PF Kill Switch 未生效，拒绝暂停隧道")
-	}
-	return c.runTunnelAction(parent, c.cfg.PauseCommand, "正在安全暂停东京隧道", "东京隧道已安全暂停，公网保持阻断", "安全暂停失败")
-}
-
 func (c *Controller) snapshotProtected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.snapshot.Protected
-}
-
-func (c *Controller) runTunnelAction(parent context.Context, command []string, started, succeeded, failed string) error {
-	if len(command) == 0 {
-		return errors.New("tunnel lifecycle command is not configured")
-	}
-	c.mu.Lock()
-	c.snapshot.Recovering = true
-	c.transitionLocked(model.StateRecovering, "controller", started)
-	c.mu.Unlock()
-	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
-	defer cancel()
-	output, err := c.runner.Run(ctx, command[0], command[1:]...)
-	c.mu.Lock()
-	c.snapshot.Recovering = false
-	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if warning, found := strings.CutPrefix(line, "WARNING: "); found {
-			c.addEventLocked("warning", "provider", warning)
-		} else if information, found := strings.CutPrefix(line, "INFO: "); found {
-			c.addEventLocked("info", "provider", information)
-		}
-	}
-	if err != nil {
-		c.addEventLocked("error", "provider", failed+": "+err.Error())
-	} else {
-		c.addEventLocked("info", "provider", succeeded)
-	}
-	c.mu.Unlock()
-	c.CheckNow(parent)
-	return err
 }
 
 func (c *Controller) apply(output checkOutput) {
@@ -409,10 +353,14 @@ func (c *Controller) apply(output checkOutput) {
 		}
 	}
 	paused := c.safelyPaused()
+	pausedRuntimeActive := paused && (!output.providerDisabled || isHealthy(byID["provider"]) || isHealthy(byID["tunnel"]) || isHealthy(byID["egress"]))
 	state := model.StateHealthy
 	switch {
 	case !protected:
 		state = model.StateUnprotected
+	case pausedRuntimeActive:
+		state = model.StateInconsistentLocked
+		connected = false
 	case paused:
 		state = model.StateMaintenance
 		connected = false
@@ -423,6 +371,13 @@ func (c *Controller) apply(output checkOutput) {
 	}
 	stages := buildStages(byID)
 	alerts := buildAlerts(byID, state, now)
+	if state == model.StateInconsistentLocked {
+		alerts = append([]model.Alert{{
+			ID: "lifecycle_inconsistent", Severity: "critical", Title: "暂停状态不一致",
+			Message:   "安全暂停标记存在，但 sing-box、TUN 或东京出口仍在运行；系统正在重新执行暂停。",
+			Component: "controller", RaisedAt: now,
+		}}, alerts...)
+	}
 	if state == model.StateMaintenance {
 		alerts = []model.Alert{{
 			ID: "safely_paused", Severity: "info", Title: "东京保护已安全暂停",
@@ -437,7 +392,7 @@ func (c *Controller) apply(output checkOutput) {
 		previousComponents[component.ID] = component
 	}
 	for _, component := range output.components {
-		if paused && expectedPausedComponent(component.ID) {
+		if state == model.StateMaintenance && expectedPausedComponent(component.ID) {
 			continue
 		}
 		previous, ok := previousComponents[component.ID]
@@ -506,7 +461,7 @@ func (c *Controller) transitionLocked(state model.ControllerState, component, me
 	severity := "info"
 	if state == model.StateUnprotected {
 		severity = "critical"
-	} else if state == model.StateDegradedLocked {
+	} else if state == model.StateDegradedLocked || state == model.StateInconsistentLocked {
 		severity = "warning"
 	}
 	c.addEventLocked(severity, component, message)
@@ -575,9 +530,8 @@ func buildStages(byID map[string]model.Component) []model.Stage {
 		stage("firewall", "PF 边界", byID["firewall"]),
 		stage("tunnel", "TUN", byID["tunnel"]),
 		stage("provider", "sing-box", byID["provider"]),
-		stage("dns", "DNS / IPv6", mergeHealth(byID["dns"], byID["ipv6"])),
-		stage("vps", "VPS 传输", byID["transport"]),
-		stage("egress", "固定出口", byID["egress"]),
+		stage("dns", "DNS / IPv6", mergeComponents("DNS / IPv6", byID["dns"], byID["ipv6"])),
+		stage("vps", "VPS 传输与固定出口", mergeComponents("VPS 传输与固定出口", byID["transport"], byID["egress"])),
 	}
 }
 
@@ -619,9 +573,9 @@ func stage(id, name string, component model.Component) model.Stage {
 	return model.Stage{ID: id, Name: name, Health: component.Health, Summary: component.Summary}
 }
 
-func mergeHealth(a, b model.Component) model.Component {
+func mergeComponents(name string, a, b model.Component) model.Component {
 	result := a
-	result.Name = "DNS / IPv6"
+	result.Name = name
 	result.Summary = strings.TrimSpace(a.Summary + " / " + b.Summary)
 	if healthRank(b.Health) > healthRank(result.Health) {
 		result.Health = b.Health

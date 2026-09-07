@@ -19,6 +19,19 @@ type recordingRunner struct {
 	commands []string
 }
 
+type launchdStartRunner struct {
+	loaded   bool
+	commands []string
+}
+
+func (r *launchdStartRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.commands = append(r.commands, strings.Join(append([]string{name}, args...), " "))
+	if name == "/bin/launchctl" && reflect.DeepEqual(args, []string{"print", "system/" + singBoxLabel}) && !r.loaded {
+		return nil, errors.New("not loaded")
+	}
+	return nil, nil
+}
+
 func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.mu.Lock()
 	r.commands = append(r.commands, strings.Join(append([]string{name}, args...), " "))
@@ -147,6 +160,33 @@ func TestCommandRecognition(t *testing.T) {
 	}
 	if IsCommand("daemon") {
 		t.Fatal("daemon flags must stay on the default code path")
+	}
+}
+
+func TestSingBoxStartDoesNotKickstartImmediatelyAfterBootstrap(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		loaded        bool
+		wantBootstrap bool
+		wantKickstart bool
+	}{
+		{name: "unloaded", loaded: false, wantBootstrap: true},
+		{name: "loaded", loaded: true, wantKickstart: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &launchdStartRunner{loaded: test.loaded}
+			manager := New(runner)
+			manager.EUID = func() int { return 0 }
+			if err := manager.ensureSingBoxStarted(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			commands := strings.Join(runner.commands, "\n")
+			hasBootstrap := strings.Contains(commands, "/bin/launchctl bootstrap system ")
+			hasKickstart := strings.Contains(commands, "/bin/launchctl kickstart -k system/"+singBoxLabel)
+			if hasBootstrap != test.wantBootstrap || hasKickstart != test.wantKickstart {
+				t.Fatalf("commands:\n%s", commands)
+			}
+		})
 	}
 }
 

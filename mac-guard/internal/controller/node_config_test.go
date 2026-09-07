@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -69,5 +70,18 @@ func TestValidateNodeUpdate(t *testing.T) {
 	invalid.RealityShortID = "abc"
 	if err := validateNodeUpdate(invalid); err == nil {
 		t.Fatal("odd-length short ID must be rejected")
+	}
+}
+
+func TestNodeUpdateIsRejectedDuringAnotherNetworkOperation(t *testing.T) {
+	controller := NewController(actionTestConfig(t), ipv6Runner{}, "test")
+	controller.operationMu.Lock()
+	defer controller.operationMu.Unlock()
+	_, err := controller.UpdateNode(context.Background(), model.NodeUpdate{
+		Server: "149.104.78.121", Port: 443, ExpectedEgress: "149.104.78.121",
+		Flow: "xtls-rprx-vision", TLSServerName: "www.cloudflare.com", UTLSFingerprint: "chrome",
+	})
+	if err == nil || !strings.Contains(err.Error(), "另一个网络操作正在执行") {
+		t.Fatalf("node update error=%v", err)
 	}
 }

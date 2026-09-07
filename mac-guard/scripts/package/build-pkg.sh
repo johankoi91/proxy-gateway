@@ -77,6 +77,7 @@ install -m 0644 "$ROOT/README.md" "$PAYLOAD/usr/local/share/doc/lightnode-contro
 install -m 0644 "$ROOT/docs/architecture.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/ARCHITECTURE.md"
 install -m 0644 "$ROOT/docs/operations.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/OPERATIONS.md"
 install -m 0644 "$ROOT/docs/dashboard.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/DASHBOARD.md"
+install -m 0644 "$ROOT/docs/runtime-audit-standard.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/RUNTIME-AUDIT-STANDARD.md"
 install -m 0644 "$SING_BOX_LICENSE" "$PAYLOAD/usr/local/share/doc/lightnode-controller/SING_BOX_LICENSE"
 install -m 0644 "$ROOT/SING_BOX_VERSION" "$PAYLOAD/usr/local/share/doc/lightnode-controller/SING_BOX_VERSION"
 install -m 0755 "$ROOT/scripts/package/pkg-postinstall.sh" "$PKG_SCRIPTS/postinstall"

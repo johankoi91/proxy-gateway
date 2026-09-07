@@ -10,7 +10,8 @@
 4. 当前节点如何配置，切换后是否通过出口验证？
 
 后台只监听 `127.0.0.1:9180`。React 静态资源嵌入 `lightnode-controller`，不需要 Node.js
-或独立前端进程。
+或独立前端进程。该后台按桌面运维场景设计，最小页面宽度为 `1100px`，不提供移动端
+响应式布局。
 
 ## 2. 数据流
 
@@ -27,7 +28,7 @@ macOS / sing-box / PF / 网络探针
         GET /api/snapshot
               │
               ▼
-        React（3 秒刷新）
+        React（总览 3 秒 / 系统检查手动）
 ```
 
 连接观察单独从 sing-box 的 loopback Clash API `127.0.0.1:9090` 每秒读取活动连接。
@@ -40,6 +41,7 @@ API Secret 只存在本机配置中，不发送给浏览器。
 | `boot_locked` | 正在启动 | 等待首次检查，PF 状态尚未确认 |
 | `healthy` | 网络保护正常 | PF、TUN、DNS、出口和观测器全部符合预期 |
 | `degraded_locked` | 已安全断网 | 线路异常，但 PF 正在阻止本地回落 |
+| `inconsistent_locked` | 状态不一致 | 暂停标记与真实进程/TUN 冲突，PF 保持并重新执行暂停 |
 | `unprotected` | 尚未启用断网保护 | PF 未确认，存在回落风险 |
 | `recovering` | 正在恢复 | 正在执行受控恢复命令 |
 | `maintenance` | 已安全暂停 | 隧道主动停止，PF 继续阻断公网 |
@@ -68,12 +70,15 @@ connected = 东京业务链路是否完整可用
 - TUN 接口。
 - DNS 是否经隧道。
 - PF 断网保护是否启用。
-- 整机公网流量的统一去向。
 - 当前告警、活动连接数和策略违例数。
+- 实时活动连接及每条连接的实际出站。
 
-总览只显示“整机全部公网流量 -> 东京 VPS”，不再按 App 或域名拆分类别。
+“整机东京”只在顶层状态带展示一次，不再增加独立的流量去向面板。
 
-## 5. 连接观察
+## 5. 总览中的实时连接
+
+连接观察直接位于总览，不再占用独立页面和导航标签。活动连接数与违例数只在顶层
+运行概况显示一次，表格不重复摘要面板。
 
 每条活动连接展示：
 
@@ -93,18 +98,18 @@ connected = 东京业务链路是否完整可用
 
 ## 6. 系统检查
 
-系统检查使用纵向列表展示连接阶段，并把四项主动探针直接嵌入对应行：VPS TCP
-443 位于“VPS 传输”，出口 IP 位于“固定出口”，DNS 与 IPv6 位于“DNS / IPv6”。
-页面不使用链路卡片，也不保留第二块独立测试列表。随后展示经过脱敏的实际配置，
-最后将底层组件按网络边界与防回落、TUN 与核心服务、DNS 与 IPv6、东京传输与出口
-分组。三个章节均遵循相同顺序：
+系统检查使用一条纵向“链路与组件”列表展示六个连接阶段。每个底层组件只出现一次；
+VPS TCP、出口 IP、DNS 和 IPv6 主动探针直接写入对应组件行的“预期值 -> 实际值”，
+不再保留独立的“连接与验证”或“组件状态”面板。健康阶段默认收起，异常阶段自动
+展开；点击阶段行可以查看其组件详情：
 
 ```text
-网络入口 -> PF 防回落 -> TUN -> sing-box -> DNS/IPv6 -> 东京 VPS -> 固定出口
+网络入口 -> PF 防回落 -> TUN -> sing-box -> DNS/IPv6 -> VPS 传输与固定出口
 ```
 
 “组件启动与配置”栏目从实际 sing-box JSON 和 launchd plist 读取 PF、TUN、
-sing-box、DNS、东京出站和 Controller 的启动参数及配置值，并关联当前组件检查。
+sing-box、DNS、东京出站和 Controller 的启动参数及配置值。健康状态只在前面的
+“链路与组件”列表展示，配置栏目默认收起且不再重复组件状态和当前检查结果。
 解析模型不会声明 VLESS UUID、Reality 公钥、short ID、Clash API Secret 或后台
 密码，因此这些字段不会进入 Snapshot 或页面。
 
@@ -120,17 +125,17 @@ sing-box、DNS、东京出站和 Controller 的启动参数及配置值，并关
 | `config` | sing-box 配置 | 文件存在、权限为 `0600` 且无占位符 |
 | `controller_service` | Controller launchd | Controller 服务已加载 |
 | `pf_bootstrap_service` | 开机 PF 引导 | 启动期 fail-closed 服务已加载 |
-| `transport` | VPS TCP 443 | `149.104.78.121:443` 可连接 |
+| `transport` | VPS 物理 Endpoint | 使用 Darwin `IP_BOUND_IF` 绑定当前物理接口后，`149.104.78.121:443` 可连接 |
 | `egress` | 公网出口 | 探针结果等于 `149.104.78.121` |
 | `dns` | 隧道 DNS | 域名可解析且主 DNS 为 `172.19.0.2` |
 | `ipv6` | IPv6 防泄漏 | 原生公网 IPv6 不可用或被 TUN 接管 |
 
-页面同时把组件合并成网络边界、PF、TUN、sing-box、VPS、出口和 DNS/IPv6 七个
-阶段，便于定位连接在哪一段中断。
+组件按网络入口、PF、TUN、sing-box、DNS/IPv6、VPS 传输与固定出口六个阶段排列，
+便于直接定位连接在哪一段中断。
 
 “运行检查”会立即执行通用网络探针：
 
-- VPS TCP 443。
+- 物理接口到 VPS TCP 443。
 - 公网出口 IP。
 - DNS 解析与路径。
 - IPv6 旁路。
@@ -165,9 +170,10 @@ sing-box、DNS、东京出站和 Controller 的启动参数及配置值，并关
 | --- | --- | --- |
 | 刷新状态 | `GET /api/snapshot` | 读取当前 Snapshot |
 | 运行检查 | `POST /api/tests/run` | 立即执行完整检查 |
-| 重启线路 | `POST /api/actions/restart` | 重启 sing-box，PF 不变 |
-| 安全暂停 | `POST /api/actions/pause` | 退出 AI App、停止隧道、保留 PF |
-| 启动保护 | `POST /api/actions/start` | 恢复链路并验证东京出口 |
+| 重启线路 | `POST /api/actions/restart` | 返回 `202 + actionId`，后台独立重启，PF 不变 |
+| 安全暂停 | `POST /api/actions/pause` | 返回 `202 + actionId`，退出 AI App、停止隧道、保留 PF |
+| 启动保护 | `POST /api/actions/start` | 返回 `202 + actionId`，恢复链路并验证东京出口 |
+| 查询操作 | `GET /api/actions/{id}` | 查询运行、成功或失败，不依赖原 POST 连接 |
 | 保存并切换节点 | `POST /api/node` | 原生管理员确认、原子写入、切换与失败回滚 |
 | 导入 VPS 配置 | `POST /api/node/import` | 校验版本、自动备份、管理员确认并切换 |
 | 创建配置备份 | `POST /api/backups` | 创建 root-only 本机备份 |
@@ -194,6 +200,7 @@ POST /api/tests/run
 POST /api/actions/restart
 POST /api/actions/pause
 POST /api/actions/start
+GET  /api/actions/{id}
 POST /api/node
 POST /api/node/import
 POST /api/backups
@@ -211,11 +218,19 @@ ssh -N -L 127.0.0.1:9184:127.0.0.1:9180 user@mac
 
 ## 10. 数据时效与限制
 
-- React 默认每 3 秒刷新 Snapshot。
+- 总览每 3 秒读取 Snapshot；系统检查进入页面时读取一次，之后只通过“刷新状态”或
+  “运行检查”更新；节点配置和事件页面每 10 秒读取顶层状态。
+- 用户连续滚动时，后台结果暂存在内存，停止滚动 250 毫秒后一次性更新，避免长列表
+  在滚动过程中重排。
 - 完整组件检查默认每 10 秒运行。
 - 连接观察默认每 1 秒采集。
 - 冲突轻量巡检默认每 2 秒运行。
 - 自动恢复使用限频，避免网络抖动造成重启循环。
+- 生命周期 Action 默认独立运行 90 秒，关闭浏览器不会取消；页面重新打开后从 Snapshot
+  恢复当前操作状态。
+- 最近 20 个 Action 可按 ID 查询，新的自动修复动作不会让旧 ID 立即失效。
 - 活动连接是瞬时数据，短连接可能在两次采集之间出现并消失。
+- 长列表按阶段隔离布局与绘制，顶部导航使用独立实色绘制层，降低虚拟机和远程桌面
+  的滚动合成开销，同时避免可见区切换时出现空白占位。
 - 日志超过 5 MiB 后轮转并保留 3 份；配置备份最多保留 10 份。
 - 后台健康状态不能对抗已经取得 root 权限并篡改 Controller、PF 或二进制的软件。

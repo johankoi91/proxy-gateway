@@ -140,8 +140,10 @@ func (c *Controller) RestoreBackup(parent context.Context, id string) (model.Nod
 	if !backupIDPattern.MatchString(id) {
 		return model.NodeConfiguration{}, errors.New("备份 ID 无效")
 	}
-	c.nodeUpdateMu.Lock()
-	defer c.nodeUpdateMu.Unlock()
+	if !c.operationMu.TryLock() {
+		return model.NodeConfiguration{}, errors.New("另一个网络操作正在执行")
+	}
+	defer c.operationMu.Unlock()
 	if err := c.authorizeNodeUpdate(parent); err != nil {
 		return model.NodeConfiguration{}, err
 	}

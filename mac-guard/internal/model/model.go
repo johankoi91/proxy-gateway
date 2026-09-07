@@ -14,13 +14,24 @@ const (
 type ControllerState string
 
 const (
-	StateBootLocked     ControllerState = "boot_locked"
-	StateHealthy        ControllerState = "healthy"
-	StateDegradedLocked ControllerState = "degraded_locked"
-	StateUnprotected    ControllerState = "unprotected"
-	StateRecovering     ControllerState = "recovering"
-	StateMaintenance    ControllerState = "maintenance"
+	StateBootLocked         ControllerState = "boot_locked"
+	StateHealthy            ControllerState = "healthy"
+	StateDegradedLocked     ControllerState = "degraded_locked"
+	StateInconsistentLocked ControllerState = "inconsistent_locked"
+	StateUnprotected        ControllerState = "unprotected"
+	StateRecovering         ControllerState = "recovering"
+	StateMaintenance        ControllerState = "maintenance"
 )
+
+type LifecycleAction struct {
+	ID         string     `json:"id"`
+	Kind       string     `json:"kind"`
+	Status     string     `json:"status"`
+	Phase      string     `json:"phase"`
+	Message    string     `json:"message"`
+	StartedAt  time.Time  `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+}
 
 type Component struct {
 	ID            string    `json:"id"`
@@ -90,14 +101,13 @@ type RuntimeConfiguration struct {
 }
 
 type RuntimeComponentConfiguration struct {
-	ID                 string           `json:"id"`
-	Name               string           `json:"name"`
-	Owner              string           `json:"owner"`
-	LaunchdLabel       string           `json:"launchdLabel,omitempty"`
-	Executable         string           `json:"executable,omitempty"`
-	Arguments          []string         `json:"arguments,omitempty"`
-	Settings           []RuntimeSetting `json:"settings"`
-	HealthComponentIDs []string         `json:"healthComponentIds"`
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	Owner        string           `json:"owner"`
+	LaunchdLabel string           `json:"launchdLabel,omitempty"`
+	Executable   string           `json:"executable,omitempty"`
+	Arguments    []string         `json:"arguments,omitempty"`
+	Settings     []RuntimeSetting `json:"settings"`
 }
 
 type RuntimeSetting struct {
@@ -127,4 +137,5 @@ type Snapshot struct {
 	Events         []Event               `json:"events"`
 	Connections    ConnectionObservation `json:"connections"`
 	RuntimeConfig  RuntimeConfiguration  `json:"runtimeConfig"`
+	Action         *LifecycleAction      `json:"action,omitempty"`
 }

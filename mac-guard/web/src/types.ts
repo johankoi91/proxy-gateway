@@ -1,5 +1,15 @@
 export type Health = "healthy" | "degraded" | "failed" | "unknown";
-export type ControllerState = "boot_locked" | "healthy" | "degraded_locked" | "unprotected" | "recovering" | "maintenance";
+export type ControllerState = "boot_locked" | "healthy" | "degraded_locked" | "inconsistent_locked" | "unprotected" | "recovering" | "maintenance";
+
+export interface LifecycleAction {
+  id: string;
+  kind: "start" | "pause" | "restart";
+  status: "running" | "succeeded" | "failed";
+  phase: string;
+  message: string;
+  startedAt: string;
+  finishedAt?: string;
+}
 
 export interface ComponentStatus {
   id: string;
@@ -99,7 +109,6 @@ export interface RuntimeComponentConfiguration {
   executable?: string;
   arguments?: string[];
   settings: RuntimeSetting[];
-  healthComponentIds: string[];
 }
 
 export interface RuntimeSetting {
@@ -162,4 +171,5 @@ export interface Snapshot {
   events: ControllerEvent[];
   connections: ConnectionObservation;
   runtimeConfig: RuntimeConfiguration;
+  action?: LifecycleAction;
 }

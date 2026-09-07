@@ -135,6 +135,8 @@ func (m *Manager) normalizeConfiguration() error {
 	cfg.StartCommand = defaults.StartCommand
 	cfg.PauseCommand = defaults.PauseCommand
 	cfg.MaintenanceFile = m.Paths.Paused
+	cfg.LifecycleActionFile = filepath.Join(m.Paths.AppDir, "lifecycle-action.json")
+	cfg.LifecycleActionTimeoutSeconds = defaults.LifecycleActionTimeoutSeconds
 	cfg.NotificationCommand = defaults.NotificationCommand
 	cfg.EventLogFile = filepath.Join(m.Paths.LogDir, "events.jsonl")
 	cfg.BackupDir = filepath.Join(m.Paths.AppDir, "backups")

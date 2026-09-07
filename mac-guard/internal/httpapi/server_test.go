@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"lightnode-mac-controller/internal/config"
 	"lightnode-mac-controller/internal/controller"
@@ -18,6 +19,24 @@ type failingRunner struct{}
 
 func (failingRunner) Run(context.Context, string, ...string) ([]byte, error) {
 	return nil, context.DeadlineExceeded
+}
+
+type detachedRunner struct {
+	started chan context.Context
+	release chan struct{}
+}
+
+func (r *detachedRunner) Run(ctx context.Context, name string, _ ...string) ([]byte, error) {
+	if name != "test-start" {
+		return nil, context.DeadlineExceeded
+	}
+	r.started <- ctx
+	select {
+	case <-r.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func TestAuthenticationAndHealth(t *testing.T) {
@@ -88,6 +107,58 @@ func TestLifecycleEndpointsArePostOnly(t *testing.T) {
 			t.Fatalf("GET %s status = %d", path, response.Code)
 		}
 	}
+}
+
+func TestLifecycleActionSurvivesRequestCancellation(t *testing.T) {
+	directory := t.TempDir()
+	cfg := config.Default()
+	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
+	cfg.LifecycleActionFile = filepath.Join(directory, "lifecycle-action.json")
+	cfg.StartCommand = []string{"test-start"}
+	runner := &detachedRunner{started: make(chan context.Context, 1), release: make(chan struct{})}
+	appController := controller.NewController(cfg, runner, "test")
+	handler := New(appController, "", "", true)
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPost, "/api/actions/start", nil).WithContext(requestContext)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var action struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &action); err != nil || action.ID == "" {
+		t.Fatalf("action=%#v err=%v", action, err)
+	}
+	actionContext := <-runner.started
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	if actionContext.Err() != nil {
+		t.Fatalf("browser cancellation reached lifecycle action: %v", actionContext.Err())
+	}
+
+	statusResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/api/actions/"+action.ID, nil))
+	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"status":"running"`) {
+		t.Fatalf("action status=%d body=%s", statusResponse.Code, statusResponse.Body.String())
+	}
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, httptest.NewRequest(http.MethodPost, "/api/actions/start", nil))
+	if secondResponse.Code != http.StatusConflict {
+		t.Fatalf("concurrent status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	close(runner.release)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := appController.LifecycleAction(action.ID)
+		if err == nil && current.Status != "running" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("detached lifecycle action did not finish")
 }
 
 func TestNodeEndpointReturnsSanitizedConfiguration(t *testing.T) {

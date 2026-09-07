@@ -15,8 +15,8 @@
 校验并安装：
 
 ```bash
-shasum -a 256 -c LightNode-Mac-Controller-0.2.0-alpha.21.pkg.sha256
-sudo installer -pkg LightNode-Mac-Controller-0.2.0-alpha.21.pkg -target /
+shasum -a 256 -c LightNode-Mac-Controller-0.2.0-alpha.32.pkg.sha256
+sudo installer -pkg LightNode-Mac-Controller-0.2.0-alpha.32.pkg -target /
 ```
 
 新装时配置仍包含占位符，因此只启动 Controller，不启动 sing-box，也不启用 PF。
@@ -123,6 +123,17 @@ sudo /usr/local/libexec/lightnode-controller tunnel pause
 
 Claude/ChatGPT 拒绝退出时不会强杀，后台记录警告后继续暂停。
 
+后台操作先返回 `actionId`，随后由 Controller 的独立 Context 执行。浏览器刷新、关闭
+或 SSH 转发中断不会杀死操作。Action 持久化于：
+
+```text
+/Library/Application Support/LightNodeController/lifecycle-action.json
+```
+
+同一时间只允许一个启动、暂停、重启、节点切换或配置恢复操作。Controller 在 Action
+运行期间重启时，会读取记录并继续执行。最近 20 个 Action 会保留在同一原子 JSON
+日志中，后续自动修复动作不会覆盖已经返回给浏览器的 actionId。
+
 ## 6. 启动保护
 
 ```text
@@ -137,6 +148,10 @@ Claude/ChatGPT 拒绝退出时不会强杀，后台记录警告后继续暂停�
 ```
 
 任何一步失败都不会删除暂停标记。恢复成功后不会自动打开 Claude 或 ChatGPT。
+
+只有暂停标记存在且 sing-box/TUN 确实停止时才显示 `maintenance`。若标记存在但隧道
+已经部分启动，状态为 `inconsistent_locked`；Controller 保持 PF、告警并自动重新执行
+暂停。暂停状态下 PF 自动修复不会停止。
 
 ## 7. 状态检查
 

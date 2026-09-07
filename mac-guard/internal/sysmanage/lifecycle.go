@@ -27,15 +27,7 @@ func (m *Manager) StartTunnel(ctx context.Context) error {
 	if _, err := m.run(ctx, m.Paths.SingBoxBinary, "check", "-c", m.Paths.SingBoxConfig); err != nil {
 		return err
 	}
-	if _, err := m.run(ctx, "/bin/launchctl", "enable", "system/"+singBoxLabel); err != nil {
-		return err
-	}
-	if !m.runOK(ctx, "/bin/launchctl", "print", "system/"+singBoxLabel) {
-		if _, err := m.run(ctx, "/bin/launchctl", "bootstrap", "system", m.Paths.SingBoxPlist); err != nil {
-			return err
-		}
-	}
-	if _, err := m.run(ctx, "/bin/launchctl", "kickstart", "-k", "system/"+singBoxLabel); err != nil {
+	if err := m.ensureSingBoxStarted(ctx); err != nil {
 		return err
 	}
 
@@ -74,6 +66,18 @@ func (m *Manager) StartTunnel(ctx context.Context) error {
 	m.log(ctx, "Tokyo tunnel started and verified at "+observed)
 	m.printf("Tokyo protection started. Egress: %s\n", observed)
 	return nil
+}
+
+func (m *Manager) ensureSingBoxStarted(ctx context.Context) error {
+	if _, err := m.run(ctx, "/bin/launchctl", "enable", "system/"+singBoxLabel); err != nil {
+		return err
+	}
+	if !m.runOK(ctx, "/bin/launchctl", "print", "system/"+singBoxLabel) {
+		_, err := m.run(ctx, "/bin/launchctl", "bootstrap", "system", m.Paths.SingBoxPlist)
+		return err
+	}
+	_, err := m.run(ctx, "/bin/launchctl", "kickstart", "-k", "system/"+singBoxLabel)
+	return err
 }
 
 func (m *Manager) PauseTunnel(ctx context.Context) error {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, AlertTriangle, Archive, BrainCircuit, CheckCircle2, ChevronRight,
+  Activity, AlertTriangle, Archive, BrainCircuit, CheckCircle2, ChevronDown, ChevronRight,
   CircleHelp, Database, FileClock, Globe2, House, Network, Play,
   Power, PowerOff, RefreshCw, RotateCcw, Route, Save, Server, Shield, ShieldCheck, Stethoscope,
   Settings2, Upload, Wifi, XCircle
@@ -8,15 +8,16 @@ import {
 import { api } from "./api";
 import type {
   BackupMetadata, ComponentStatus, ControllerState, Health,
-  ConnectionObservation, NodeConfiguration, NodeUpdate, RuntimeComponentConfiguration, Snapshot, Stage, TestResult
+  ConnectionObservation, LifecycleAction, NodeConfiguration, NodeUpdate, RuntimeComponentConfiguration, Snapshot, Stage, TestResult
 } from "./types";
 
-type View = "overview" | "connections" | "diagnostics" | "node" | "events";
+type View = "overview" | "diagnostics" | "node" | "events";
 
 const stateLabels: Record<ControllerState, { label: string; detail: string }> = {
   boot_locked: { label: "正在启动", detail: "等待首轮网络检查" },
   healthy: { label: "网络保护正常", detail: "出口与防泄漏策略均符合预期" },
   degraded_locked: { label: "已安全断网", detail: "线路异常，Kill Switch 正在阻止本地回落" },
+  inconsistent_locked: { label: "状态不一致", detail: "保护标记与真实网络状态冲突，正在恢复安全状态" },
   unprotected: { label: "尚未启用断网保护", detail: "当前线路可用，但断线时仍可能回落到本地网络" },
   recovering: { label: "正在恢复", detail: "正在重启网络组件" },
   maintenance: { label: "已安全暂停", detail: "东京隧道已停止，Kill Switch 正在阻止本地公网" }
@@ -25,16 +26,22 @@ const stateLabels: Record<ControllerState, { label: string; detail: string }> = 
 const stageIcons: Record<string, React.ReactNode> = {
   network: <Wifi size={18} />, firewall: <Shield size={18} />,
   tunnel: <Route size={18} />, provider: <Network size={18} />,
-  vps: <Server size={18} />, egress: <Globe2 size={18} />,
+  vps: <Server size={18} />,
   dns: <Database size={18} />
 };
 
-const componentGroups = [
-  { id: "network", name: "网络边界与防回落", componentIDs: ["network_conflict", "firewall", "firewall_config", "firewall_binding", "pf_bootstrap_service"] },
-  { id: "tunnel", name: "TUN 与核心服务", componentIDs: ["tunnel", "provider", "provider_service", "config", "controller_service"] },
-  { id: "dns", name: "DNS 与 IPv6", componentIDs: ["dns", "ipv6"] },
-  { id: "egress", name: "东京传输与出口", componentIDs: ["transport", "egress"] }
-];
+const stageComponentIDs: Record<string, string[]> = {
+  network: ["network_conflict"],
+  firewall: ["firewall", "firewall_config", "firewall_binding", "pf_bootstrap_service"],
+  tunnel: ["tunnel"],
+  provider: ["provider", "provider_service", "config", "controller_service"],
+  dns: ["dns", "ipv6"],
+  vps: ["transport", "egress"]
+};
+
+const componentTestIDs: Record<string, string> = {
+  transport: "vps_tcp", egress: "egress", dns: "dns", ipv6: "ipv6"
+};
 
 const runtimeConfigIcons: Record<string, React.ReactNode> = {
   firewall: <Shield size={18} />, tunnel: <Route size={18} />, "sing-box": <Network size={18} />,
@@ -46,24 +53,57 @@ export default function App() {
   const [view, setView] = useState<View>("overview");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<"refresh" | "tests" | "restart" | "start" | "pause" | "">("");
+  const scrolling = useRef(false);
+  const pendingSnapshot = useRef<Snapshot | null>(null);
+  const scrollTimer = useRef<number | null>(null);
+
+  const applySnapshot = useCallback((next: Snapshot, deferWhileScrolling: boolean) => {
+    if (deferWhileScrolling && scrolling.current) {
+      pendingSnapshot.current = next;
+      return;
+    }
+    setSnapshot(next);
+  }, []);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setBusy("refresh");
     try {
-      setSnapshot(await api.snapshot());
+      applySnapshot(await api.snapshot(), quiet);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "状态读取失败");
     } finally {
       if (!quiet) setBusy("");
     }
+  }, [applySnapshot]);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      scrolling.current = true;
+      if (scrollTimer.current !== null) window.clearTimeout(scrollTimer.current);
+      scrollTimer.current = window.setTimeout(() => {
+        scrolling.current = false;
+        scrollTimer.current = null;
+        if (pendingSnapshot.current) {
+          setSnapshot(pendingSnapshot.current);
+          pendingSnapshot.current = null;
+        }
+      }, 250);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      if (scrollTimer.current !== null) window.clearTimeout(scrollTimer.current);
+    };
   }, []);
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 3000);
+    if (view === "diagnostics") return;
+    const interval = view === "overview" ? 3000 : 10000;
+    const timer = window.setInterval(() => void load(true), interval);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, view]);
 
   const abnormalCount = useMemo(
     () => snapshot?.components.filter((item) => item.health === "failed" || item.health === "degraded").length || 0,
@@ -71,6 +111,20 @@ export default function App() {
   );
 
   const headline = snapshot ? stateLabels[snapshot.state] : stateLabels.boot_locked;
+  const actionRunning = snapshot?.action?.status === "running";
+
+  async function finishLifecycleAction(initial: LifecycleAction) {
+    let current = initial;
+    setSnapshot((value) => value ? { ...value, action: current } : value);
+    for (let attempt = 0; attempt < 200 && current.status === "running"; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      current = await api.action(current.id);
+      setSnapshot((value) => value ? { ...value, action: current } : value);
+    }
+    setSnapshot(await api.snapshot());
+    if (current.status === "running") throw new Error("网络操作等待超时，可刷新页面继续查看状态");
+    if (current.status === "failed") throw new Error(current.message);
+  }
 
   async function runTests() {
     setBusy("tests");
@@ -88,7 +142,7 @@ export default function App() {
     if (!window.confirm("重启东京线路？当前 Kill Switch 状态不会改变。")) return;
     setBusy("restart");
     try {
-      setSnapshot(await api.restart());
+      await finishLifecycleAction(await api.restart());
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "恢复动作失败");
@@ -100,7 +154,7 @@ export default function App() {
   async function start() {
     setBusy("start");
     try {
-      setSnapshot(await api.start());
+      await finishLifecycleAction(await api.start());
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "启动保护失败");
@@ -113,7 +167,7 @@ export default function App() {
     if (!window.confirm("安全暂停？系统会先请求 Claude 和 ChatGPT 正常退出，再停止东京隧道；Kill Switch 会继续阻断整机公网。")) return;
     setBusy("pause");
     try {
-      setSnapshot(await api.pause());
+      await finishLifecycleAction(await api.pause());
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "安全暂停失败");
@@ -129,17 +183,16 @@ export default function App() {
         <div className="toolbar">
           <button className="icon-button" onClick={() => void load()} title="刷新状态" aria-label="刷新状态"><RefreshCw size={18} className={busy === "refresh" ? "spin" : ""} /></button>
           <button className="tool-button" onClick={() => void runTests()} disabled={Boolean(busy)}><Play size={16} />运行检查</button>
-          {snapshot?.state === "maintenance"
-            ? <button className="tool-button" onClick={() => void start()} disabled={Boolean(busy)}><Power size={16} />启动保护</button>
-            : <button className="tool-button" onClick={() => void pause()} disabled={Boolean(busy) || !snapshot?.protected}><PowerOff size={16} />安全暂停</button>}
-          <button className="tool-button" onClick={() => void restart()} disabled={Boolean(busy) || snapshot?.state === "maintenance"}><RotateCcw size={16} />重启线路</button>
+          {snapshot?.state === "maintenance" || snapshot?.state === "inconsistent_locked"
+            ? <button className="tool-button" onClick={() => void start()} disabled={Boolean(busy) || actionRunning}><Power size={16} />启动保护</button>
+            : <button className="tool-button" onClick={() => void pause()} disabled={Boolean(busy) || actionRunning || !snapshot?.protected}><PowerOff size={16} />安全暂停</button>}
+          <button className="tool-button" onClick={() => void restart()} disabled={Boolean(busy) || actionRunning || snapshot?.state === "maintenance"}><RotateCcw size={16} />重启线路</button>
         </div>
       </header>
 
       <nav className="app-tabs" aria-label="后台页面">
         <div className="page-width tab-row">
           <Tab active={view === "overview"} onClick={() => setView("overview")} icon={<House size={17} />} label="总览" />
-          <Tab active={view === "connections"} onClick={() => setView("connections")} icon={<BrainCircuit size={17} />} label="连接观察" badge={snapshot?.connections?.violationCount} />
           <Tab active={view === "diagnostics"} onClick={() => setView("diagnostics")} icon={<Stethoscope size={17} />} label="系统检查" badge={abnormalCount} />
           <Tab active={view === "node"} onClick={() => setView("node")} icon={<Server size={17} />} label="节点配置" />
           <Tab active={view === "events"} onClick={() => setView("events")} icon={<FileClock size={17} />} label="事件记录" />
@@ -148,9 +201,9 @@ export default function App() {
 
       <main>
         {error && <div className="page-width error-banner"><XCircle size={18} />{error}</div>}
+        {snapshot?.action?.status === "running" && <div className="page-width action-banner"><RefreshCw size={17} className="spin" /><span><strong>{snapshot.action.message}</strong><small>操作 ID {snapshot.action.id}，关闭页面不会中止</small></span></div>}
         {view === "overview" && <Overview snapshot={snapshot} headline={headline} abnormalCount={abnormalCount} onNavigate={setView} />}
-        {view === "connections" && <div className="page-width view-content">{snapshot ? <ConnectionView observation={snapshot.connections} /> : <Unavailable title="连接观察尚未就绪" />}</div>}
-        {view === "diagnostics" && <Diagnostics snapshot={snapshot} />}
+        {view === "diagnostics" && <Diagnostics snapshot={snapshot} onRefresh={() => void load()} refreshing={busy === "refresh"} />}
         {view === "node" && <NodeSettings />}
         {view === "events" && <Events snapshot={snapshot} />}
       </main>
@@ -202,41 +255,21 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
 
     <div className="page-width view-content overview-stack">
       <section>
-        <SectionTitle icon={<Route size={19} />} title="流量去向" meta="全机统一策略" />
-        <div className="route-board route-board-one">
-          <TrafficRoute
-            icon={<Globe2 size={20} />}
-            name="整机全部公网流量"
-            now={snapshot?.connected ? `东京 VPS ${snapshot.observedEgress}` : "东京线路不可用"}
-            target={`唯一出口 ${snapshot?.runtimeConfig.vpsAddress || "未配置"}，无其他分类或回退`}
-            health={snapshot?.connected ? "healthy" : snapshot?.protected ? "degraded" : "failed"}
-          />
-        </div>
-      </section>
-
-      <section>
         <SectionTitle icon={<AlertTriangle size={19} />} title="需要关注" meta={`${snapshot?.alerts.length || 0} 项`} />
         {snapshot?.alerts.length ? <div className="attention-list">{snapshot.alerts.slice(0, 4).map((alert) =>
-          <button className={`attention-row severity-${alert.severity}`} key={alert.id} onClick={() => onNavigate(alert.component === "connection_observer" ? "connections" : "diagnostics")}>
+          <button className={`attention-row severity-${alert.severity}`} key={alert.id} onClick={() => onNavigate(alert.component === "connection_observer" ? "overview" : "diagnostics")}>
             <AlertTriangle size={17} /><span><strong>{friendlyTitle(alert.title)}</strong><small>{friendlyMessage(alert.message)}</small></span><ChevronRight size={17} />
           </button>
         )}</div> : <div className="all-clear"><CheckCircle2 size={20} /><span>当前没有需要处理的问题</span></div>}
       </section>
-
+      {connections ? <ConnectionSection observation={connections} /> : <Unavailable title="连接数据尚未就绪" />}
     </div>
   </>;
 }
 
-function ConnectionView({ observation }: { observation: ConnectionObservation }) {
+function ConnectionSection({ observation }: { observation: ConnectionObservation }) {
   return <section className="connection-workbench">
-    <ViewTitle icon={<BrainCircuit size={22} />} title="连接观察" detail={`整机东京 · ${observation.message}`} health={observation.health} />
-    <div className="connection-summary">
-      <Fact label="活动连接" value={String(observation.activeConnections.length)} />
-      <Fact label="路由模式" value="整机东京" health="healthy" />
-      <Fact label="出口违例" value={String(observation.violationCount)} health={observation.violationCount ? "failed" : "healthy"} />
-      <Fact label="最后采集" value={formatTime(observation.lastSuccessfulPollAt || "")} />
-    </div>
-    <div className="connection-table-heading"><span>实时连接</span><b>{observation.activeConnections.length}</b></div>
+    <SectionTitle icon={<BrainCircuit size={19} />} title="实时连接" meta={`最后采集 ${formatTime(observation.lastSuccessfulPollAt || "")}`} />
     <div className="connection-table-wrap"><table className="connection-table active-connection-table">
       <thead><tr><th>进程</th><th>目标</th><th>实际出站</th><th>结果</th><th>流量</th></tr></thead>
       <tbody>{observation.activeConnections.slice(0, 100).map((connection) => <tr key={connection.id}>
@@ -249,24 +282,37 @@ function ConnectionView({ observation }: { observation: ConnectionObservation })
   </section>;
 }
 
-function Diagnostics({ snapshot }: { snapshot: Snapshot | null }) {
+function Diagnostics({ snapshot, onRefresh, refreshing }: { snapshot: Snapshot | null; onRefresh: () => void; refreshing: boolean }) {
   const runtime = snapshot?.runtimeConfig;
+  const stages = snapshot?.stages || defaultStages();
+  const components = snapshot?.components || [];
+  const tests = snapshot?.tests || [];
+  const [showRuntime, setShowRuntime] = useState(false);
   return <div className="page-width view-content diagnostics-stack">
-    <ViewTitle icon={<Stethoscope size={22} />} title="系统检查" detail={snapshot?.lastCheckAt ? `检查于 ${formatTime(snapshot.lastCheckAt)}` : "等待检查"} />
+    <ViewTitle
+      icon={<Stethoscope size={22} />}
+      title="系统检查"
+      detail={snapshot?.lastCheckAt ? `检查于 ${formatTime(snapshot.lastCheckAt)}` : "等待检查"}
+      action={<button className="secondary-command" type="button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={16} className={refreshing ? "spin" : ""} />刷新状态</button>}
+    />
     <section>
-      <SectionTitle icon={<Route size={19} />} title="连接与验证" meta={`${snapshot?.tests.length || 0} 项主动测试 · ${Math.max(1, secondsUntil(snapshot?.nextCheckAt || ""))} 秒后刷新`} />
-      <div className="verification-list">{(snapshot?.stages || defaultStages()).map((stage, index, values) => <StageRow key={stage.id} stage={stage} tests={testsForStage(snapshot?.tests || [], stage.id)} index={index + 1} last={index === values.length - 1} />)}</div>
+      <SectionTitle icon={<Route size={19} />} title="链路与组件" meta={`${components.length} 项组件 · ${tests.length} 项主动验证 · 手动刷新`} />
+      <div className="diagnostic-stage-list">{stages.map((stage) => <DiagnosticStageRow
+        key={stage.id}
+        stage={stage}
+        components={components.filter((item) => stageComponentIDs[stage.id]?.includes(item.id))}
+        tests={tests}
+      />)}</div>
     </section>
     <section>
-      <SectionTitle icon={<Settings2 size={19} />} title="组件启动与配置" meta="读取实际文件 · 已脱敏" />
-      <div className="runtime-component-list">{(runtime?.components || []).map((configuration) => <RuntimeConfigRow configuration={configuration} snapshot={snapshot} key={configuration.id} />)}{!runtime?.components.length && <div className="empty">等待读取配置</div>}</div>
-    </section>
-    <section>
-      <SectionTitle icon={<Activity size={19} />} title="组件状态" meta={`${snapshot?.components.length || 0} 项 · ${componentGroups.length} 类`} />
-      <div className="component-groups">{componentGroups.map((group) => {
-        const items = (snapshot?.components || []).filter((item) => group.componentIDs.includes(item.id));
-        return <div className="component-group" data-group={group.id} key={group.id}><div className="component-group-head"><span className={`group-icon health-${groupHealth(items)}`}>{stageIcons[group.id]}</span><div><strong>{group.name}</strong><small>{items.length} 项</small></div><HealthBadge health={groupHealth(items)} /></div><div className="component-list">{items.map((item) => <ComponentListRow component={item} key={item.id} />)}{!items.length && <div className="empty component-empty">等待检查</div>}</div></div>;
-      })}</div>
+      <ActionSectionTitle
+        icon={<Settings2 size={19} />}
+        title="组件启动与配置"
+        action={showRuntime ? "收起配置" : `展开配置 (${runtime?.components.length || 0})`}
+        expanded={showRuntime}
+        onClick={() => setShowRuntime((current) => !current)}
+      />
+      {showRuntime && <div className="runtime-component-list">{(runtime?.components || []).map((configuration) => <RuntimeConfigRow configuration={configuration} key={configuration.id} />)}{!runtime?.components.length && <div className="empty">等待读取配置</div>}</div>}
     </section>
   </div>;
 }
@@ -451,49 +497,62 @@ function SecretField({ label, configured, children }: { label: string; configure
   return <label className="field"><span>{label}<small className={configured ? "configured" : "missing"}>{configured ? "已配置" : "未配置"}</small></span>{children}</label>;
 }
 
-function ViewTitle({ icon, title, detail, health }: { icon: React.ReactNode; title: string; detail: string; health?: Health }) {
-  return <div className="view-title"><div>{icon}<span><h1>{title}</h1><p>{detail}</p></span></div>{health && <HealthBadge health={health} />}</div>;
+function ViewTitle({ icon, title, detail, health, action }: { icon: React.ReactNode; title: string; detail: string; health?: Health; action?: React.ReactNode }) {
+  return <div className="view-title"><div>{icon}<span><h1>{title}</h1><p>{detail}</p></span></div><div className="view-title-actions">{health && <HealthBadge health={health} />}{action}</div></div>;
 }
 
 function SectionTitle({ icon, title, meta }: { icon: React.ReactNode; title: string; meta: string }) {
   return <div className="section-heading"><div>{icon}<h2>{title}</h2></div><span>{meta}</span></div>;
 }
 
+function ActionSectionTitle({ icon, title, action, expanded, onClick }: {
+  icon: React.ReactNode; title: string; action: string; expanded: boolean; onClick: () => void;
+}) {
+  return <div className="section-heading"><div>{icon}<h2>{title}</h2></div><button className="section-toggle" type="button" aria-expanded={expanded} onClick={onClick}>{action}{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button></div>;
+}
+
 function HealthItem({ icon, label, value, health }: { icon: React.ReactNode; label: string; value: string; health: Health }) {
   return <div className="health-item"><span className={`health-dot health-${health}`}>{icon}</span><div><small>{label}</small><strong>{value}</strong></div></div>;
-}
-
-function TrafficRoute({ icon, name, now, target, health }: { icon: React.ReactNode; name: string; now: string; target: string; health: Health }) {
-  return <article className="traffic-route"><span className={`route-icon health-${health}`}>{icon}</span><div className="route-copy"><strong>{name}</strong><span><small>现在</small>{now}</span><span><small>目标</small>{target}</span></div></article>;
-}
-
-function Fact({ label, value, health = "unknown" }: { label: string; value: string; health?: Health }) {
-  return <div className="fact"><span>{label}</span><strong className={`health-${health}`}>{value}</strong></div>;
 }
 
 function RuntimeFact({ label, value, health = "unknown" }: { label: string; value: string; health?: Health }) {
   return <div className="runtime-fact"><span>{label}</span><strong className={`health-${health}`}>{value}</strong></div>;
 }
 
-function RuntimeConfigRow({ configuration, snapshot }: { configuration: RuntimeComponentConfiguration; snapshot: Snapshot | null }) {
-  const related = (snapshot?.components || []).filter((item) => configuration.healthComponentIds.includes(item.id));
-  const health = groupHealth(related);
+function RuntimeConfigRow({ configuration }: { configuration: RuntimeComponentConfiguration }) {
   const command = configuration.executable ? formatCommand(configuration.executable, configuration.arguments || []) : `由 ${configuration.owner} 内部创建，无独立启动命令`;
-  const actual = related.length ? related.map((item) => `${item.name}: ${item.summary}${item.detail ? ` (${item.detail})` : ""}`).join(" · ") : "等待检查";
   return <div className="runtime-component-row" data-component-config={configuration.id}>
-    <div className="runtime-component-head"><span className={`runtime-component-icon health-${health}`}>{runtimeConfigIcons[configuration.id] || <Settings2 size={18} />}</span><div><strong>{configuration.name}</strong><small>{configuration.owner}{configuration.launchdLabel ? ` · ${configuration.launchdLabel}` : ""}</small></div><HealthBadge health={health} /></div>
+    <div className="runtime-component-head"><span className="runtime-component-icon">{runtimeConfigIcons[configuration.id] || <Settings2 size={18} />}</span><div><strong>{configuration.name}</strong><small>{configuration.owner}{configuration.launchdLabel ? ` · ${configuration.launchdLabel}` : ""}</small></div></div>
     <div className="runtime-command"><span>启动</span><code>{command}</code></div>
     <div className="runtime-settings">{configuration.settings.map((setting) => <div key={`${configuration.id}-${setting.name}`}><span>{setting.name}</span><code>{setting.value}</code></div>)}</div>
-    <div className="runtime-actual"><span>当前</span><p>{actual}</p></div>
   </div>;
 }
 
-function StageRow({ stage, tests, index, last }: { stage: Stage; tests: TestResult[]; index: number; last: boolean }) {
-  return <div className={`verification-row${last ? " last" : ""}`} data-stage={stage.id}><div className={`verification-step health-${stage.health}`}><span>{index}</span>{stageIcons[stage.id] || <CircleHelp size={18} />}</div><div className="verification-copy"><strong>{stage.name}</strong><small>{stage.summary || "等待检查"}</small></div><div className="verification-evidence">{tests.map((test) => <div className={`evidence-row health-${test.health}`} title={test.detail} key={test.id}><span><HealthIcon health={test.health} size={12} />{test.name}</span><code>{test.actual || "-"}</code><em>{test.durationMs} ms</em></div>)}</div><HealthBadge health={stage.health} /></div>;
-}
-
-function ComponentListRow({ component }: { component: ComponentStatus }) {
-  return <div className="component-row"><HealthIcon health={component.health} size={15} /><div><strong>{component.name}</strong><span>{component.summary}</span></div><code>{component.detail || "-"}</code><small>{component.latencyMs} ms · {formatTime(component.lastCheckedAt)}</small></div>;
+function DiagnosticStageRow({ stage, components, tests }: { stage: Stage; components: ComponentStatus[]; tests: TestResult[] }) {
+  const [opened, setOpened] = useState(false);
+  const expanded = opened || stage.health === "failed" || stage.health === "degraded";
+  const activeTestCount = components.filter((item) => componentTestIDs[item.id]).length;
+  return <section className="diagnostic-stage" data-stage={stage.id}>
+    <button className={`diagnostic-stage-head${expanded ? " expanded" : ""}`} type="button" aria-expanded={expanded} onClick={() => setOpened((current) => !current)}>
+      <span className={`diagnostic-stage-icon health-${stage.health}`}>{stageIcons[stage.id] || <CircleHelp size={18} />}</span>
+      <div><strong>{stage.name}</strong><small>{components.length} 项组件{activeTestCount ? ` · ${activeTestCount} 项主动验证` : ""}</small></div>
+      <HealthBadge health={stage.health} />
+      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+    </button>
+    {expanded && <div className="diagnostic-component-list">{components.map((item) => {
+      const testID = componentTestIDs[item.id];
+      const test = testID ? tests.find((candidate) => candidate.id === testID) : undefined;
+      return <div className="diagnostic-component-row" data-component={item.id} data-test={test?.id} key={item.id}>
+        <HealthIcon health={item.health} size={15} />
+        <div className="diagnostic-component-copy"><strong>{item.name}</strong><span>{item.summary}</span></div>
+        <div className="diagnostic-evidence">
+          <small>{test ? "主动验证" : "当前值"}</small>
+          <code>{test ? `${test.expected} → ${test.actual || "-"}` : item.detail || "-"}</code>
+        </div>
+        <small>{test?.durationMs ?? item.latencyMs} ms · {formatTime(test?.runAt || item.lastCheckedAt)}</small>
+      </div>;
+    })}{!components.length && <div className="empty">等待组件检查</div>}</div>}
+  </section>;
 }
 
 function HealthBadge({ health }: { health: Health }) {
@@ -511,6 +570,7 @@ function HealthIcon({ health, size }: { health: Health; size: number }) {
 function StateIcon({ state }: { state?: ControllerState }) {
   if (state === "healthy") return <CheckCircle2 size={30} />;
   if (state === "degraded_locked") return <ShieldCheck size={30} />;
+  if (state === "inconsistent_locked") return <AlertTriangle size={30} />;
   if (state === "unprotected") return <AlertTriangle size={30} />;
   return <CircleHelp size={30} />;
 }
@@ -524,19 +584,7 @@ function component(snapshot: Snapshot | null, id: string) {
 }
 
 function defaultStages(): Stage[] {
-  return ["network", "firewall", "tunnel", "provider", "dns", "vps", "egress"].map((id) => ({ id, name: id, health: "unknown", summary: "等待检查" }));
-}
-
-function testsForStage(tests: TestResult[], stageID: string) {
-  const ids: Record<string, string[]> = { vps: ["vps_tcp"], egress: ["egress"], dns: ["dns", "ipv6"] };
-  return tests.filter((test) => ids[stageID]?.includes(test.id));
-}
-
-function groupHealth(items: ComponentStatus[]): Health {
-  if (!items.length || items.some((item) => item.health === "unknown")) return "unknown";
-  if (items.some((item) => item.health === "failed")) return "failed";
-  if (items.some((item) => item.health === "degraded")) return "degraded";
-  return "healthy";
+  return ["network", "firewall", "tunnel", "provider", "dns", "vps"].map((id) => ({ id, name: id, health: "unknown", summary: "等待检查" }));
 }
 
 function formatCommand(executable: string, args: string[]) {
@@ -563,11 +611,6 @@ function formatTime(value: string) {
 function formatDateTime(value: string) {
   if (!value) return "-";
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(value));
-}
-
-function secondsUntil(value: string) {
-  if (!value) return 0;
-  return Math.max(0, Math.round((new Date(value).getTime() - Date.now()) / 1000));
 }
 
 function processName(path: string) {

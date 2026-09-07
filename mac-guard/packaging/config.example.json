@@ -39,6 +39,8 @@
   "startCommand": ["/usr/local/libexec/lightnode-controller", "tunnel", "start"],
   "pauseCommand": ["/usr/local/libexec/lightnode-controller", "tunnel", "pause"],
   "maintenanceFile": "/Library/Application Support/LightNodeController/safely-paused",
+  "lifecycleActionFile": "/Library/Application Support/LightNodeController/lifecycle-action.json",
+  "lifecycleActionTimeoutSeconds": 90,
   "notificationCommand": ["/usr/local/libexec/lightnode-controller", "notify"],
   "eventLogFile": "/Library/Logs/LightNodeController/events.jsonl",
   "eventLimit": 200,

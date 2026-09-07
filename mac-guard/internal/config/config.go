@@ -49,6 +49,8 @@ type Config struct {
 	StartCommand                  []string `json:"startCommand"`
 	PauseCommand                  []string `json:"pauseCommand"`
 	MaintenanceFile               string   `json:"maintenanceFile"`
+	LifecycleActionFile           string   `json:"lifecycleActionFile"`
+	LifecycleActionTimeoutSeconds int      `json:"lifecycleActionTimeoutSeconds"`
 	NotificationCommand           []string `json:"notificationCommand"`
 	EventLogFile                  string   `json:"eventLogFile"`
 	EventLimit                    int      `json:"eventLimit"`
@@ -101,6 +103,8 @@ func Default() Config {
 		StartCommand:                  []string{controllerBinary, "tunnel", "start"},
 		PauseCommand:                  []string{controllerBinary, "tunnel", "pause"},
 		MaintenanceFile:               "/Library/Application Support/LightNodeController/safely-paused",
+		LifecycleActionFile:           "/Library/Application Support/LightNodeController/lifecycle-action.json",
+		LifecycleActionTimeoutSeconds: 90,
 		NotificationCommand:           []string{controllerBinary, "notify"},
 		EventLogFile:                  "/Library/Logs/LightNodeController/events.jsonl",
 		EventLimit:                    200,
@@ -136,6 +140,9 @@ func Load(path string) (Config, error) {
 	if cfg.CheckTimeoutSeconds < 1 {
 		cfg.CheckTimeoutSeconds = 1
 	}
+	if cfg.LifecycleActionTimeoutSeconds < 30 {
+		cfg.LifecycleActionTimeoutSeconds = 30
+	}
 	if cfg.ConflictCheckIntervalSeconds < 1 {
 		cfg.ConflictCheckIntervalSeconds = 1
 	}
@@ -166,4 +173,8 @@ func (c Config) CheckInterval() time.Duration {
 
 func (c Config) CheckTimeout() time.Duration {
 	return time.Duration(c.CheckTimeoutSeconds) * time.Second
+}
+
+func (c Config) LifecycleActionTimeout() time.Duration {
+	return time.Duration(c.LifecycleActionTimeoutSeconds) * time.Second
 }

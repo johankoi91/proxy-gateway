@@ -33,6 +33,7 @@ func New(controller *controller.Controller, user, password string, disableAuth b
 	mux.HandleFunc("/api/actions/restart", s.auth(method(http.MethodPost, s.restart)))
 	mux.HandleFunc("/api/actions/start", s.auth(method(http.MethodPost, s.start)))
 	mux.HandleFunc("/api/actions/pause", s.auth(method(http.MethodPost, s.pause)))
+	mux.HandleFunc("/api/actions/", s.auth(method(http.MethodGet, s.action)))
 	mux.HandleFunc("/api/node", s.auth(s.node))
 	mux.HandleFunc("/api/node/import", s.auth(method(http.MethodPost, s.importNode)))
 	mux.HandleFunc("/api/backups", s.auth(s.backups))
@@ -149,27 +150,38 @@ func (s *Server) runTests(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
-	if err := s.controller.RestartTunnel(r.Context()); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, s.controller.Snapshot())
+	s.queueLifecycleAction(w, "restart")
 }
 
-func (s *Server) start(w http.ResponseWriter, r *http.Request) {
-	if err := s.controller.StartTunnel(r.Context()); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, s.controller.Snapshot())
+func (s *Server) start(w http.ResponseWriter, _ *http.Request) {
+	s.queueLifecycleAction(w, "start")
 }
 
-func (s *Server) pause(w http.ResponseWriter, r *http.Request) {
-	if err := s.controller.PauseTunnel(r.Context()); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+func (s *Server) pause(w http.ResponseWriter, _ *http.Request) {
+	s.queueLifecycleAction(w, "pause")
+}
+
+func (s *Server) queueLifecycleAction(w http.ResponseWriter, kind string) {
+	action, err := s.controller.QueueLifecycleAction(kind)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.controller.Snapshot())
+	writeJSON(w, http.StatusAccepted, action)
+}
+
+func (s *Server) action(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/actions/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	action, err := s.controller.LifecycleAction(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, action)
 }
 
 func (s *Server) frontend(w http.ResponseWriter, r *http.Request) {

@@ -68,8 +68,10 @@ func configuredSecret(value string) bool {
 }
 
 func (c *Controller) UpdateNode(parent context.Context, update model.NodeUpdate) (model.NodeConfiguration, error) {
-	c.nodeUpdateMu.Lock()
-	defer c.nodeUpdateMu.Unlock()
+	if !c.operationMu.TryLock() {
+		return model.NodeConfiguration{}, errors.New("另一个网络操作正在执行")
+	}
+	defer c.operationMu.Unlock()
 	if err := validateNodeUpdate(update); err != nil {
 		return model.NodeConfiguration{}, err
 	}

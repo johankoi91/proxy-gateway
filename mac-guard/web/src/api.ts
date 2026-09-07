@@ -1,4 +1,4 @@
-import type { BackupMetadata, NodeConfiguration, NodeUpdate, Snapshot } from "./types";
+import type { BackupMetadata, LifecycleAction, NodeConfiguration, NodeUpdate, Snapshot } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, cache: "no-store" });
@@ -12,9 +12,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   snapshot: () => request<Snapshot>("/api/snapshot"),
   runTests: () => request<Snapshot>("/api/tests/run", { method: "POST" }),
-  restart: () => request<Snapshot>("/api/actions/restart", { method: "POST" }),
-  start: () => request<Snapshot>("/api/actions/start", { method: "POST" }),
-  pause: () => request<Snapshot>("/api/actions/pause", { method: "POST" }),
+  restart: () => request<LifecycleAction>("/api/actions/restart", { method: "POST" }),
+  start: () => request<LifecycleAction>("/api/actions/start", { method: "POST" }),
+  pause: () => request<LifecycleAction>("/api/actions/pause", { method: "POST" }),
+  action: (id: string) => request<LifecycleAction>(`/api/actions/${encodeURIComponent(id)}`),
   node: () => request<NodeConfiguration>("/api/node"),
   updateNode: (configuration: NodeUpdate) => request<NodeConfiguration>("/api/node", {
     method: "POST",

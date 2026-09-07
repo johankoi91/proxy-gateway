@@ -87,7 +87,6 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 				"Endpoint 白名单", fmt.Sprintf("%s:%d/tcp", cfg.VPSAddress, cfg.VPSPort), "提交标记", cfg.FirewallCommittedFile,
 				"开机引导", "com.lightnode.pf-bootstrap",
 			),
-			HealthComponentIDs: []string{"firewall", "firewall_config", "firewall_binding", "pf_bootstrap_service"},
 		},
 		{
 			ID: "tunnel", Name: "TUN", Owner: "sing-box inbound",
@@ -95,13 +94,11 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 				"类型", tun.Type, "Tag", tun.Tag, "地址", strings.Join(tun.Address, ", "), "MTU", strconv.Itoa(tun.MTU),
 				"DNS 模式", tun.DNSMode, "auto_route", strconv.FormatBool(tun.AutoRoute), "strict_route", strconv.FormatBool(tun.StrictRoute),
 			),
-			HealthComponentIDs: []string{"tunnel"},
 		},
 		{
 			ID: "sing-box", Name: "sing-box", Owner: "launchd", LaunchdLabel: singLabel,
 			Executable: singExecutable, Arguments: singArguments,
-			Settings:           settings("配置文件", cfg.SingBoxConfigFile, "KeepAlive", "true", "启动加载", "true"),
-			HealthComponentIDs: []string{"provider", "provider_service", "config"},
+			Settings: settings("配置文件", cfg.SingBoxConfigFile, "KeepAlive", "true", "启动加载", "true"),
 		},
 		{
 			ID: "dns", Name: "DNS", Owner: "sing-box DNS",
@@ -109,7 +106,6 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 				"系统入口", strings.Join(cfg.ExpectedDNSServers, ", "), "上游", fmt.Sprintf("%s://%s:%d%s", dns.Type, dns.Server, dns.ServerPort, dns.Path),
 				"TLS SNI", dns.TLS.ServerName, "strategy", singBox.DNS.Strategy, "final", singBox.DNS.Final, "detour", dns.Detour,
 			),
-			HealthComponentIDs: []string{"dns", "ipv6"},
 		},
 		{
 			ID: "outbound", Name: "东京出站", Owner: "sing-box outbound",
@@ -118,7 +114,6 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 				"flow", outbound.Flow, "TLS", strconv.FormatBool(outbound.TLS.Enabled), "TLS SNI", outbound.TLS.ServerName,
 				"uTLS 指纹", outbound.TLS.UTLS.Fingerprint, "route.final", singBox.Route.Final,
 			),
-			HealthComponentIDs: []string{"transport", "egress"},
 		},
 		{
 			ID: "controller", Name: "LightNode Controller", Owner: "launchd", LaunchdLabel: controllerLabel,
@@ -126,9 +121,9 @@ func runtimeConfiguration(cfg config.Config) model.RuntimeConfiguration {
 			Settings: settings(
 				"监听", cfg.ListenAddress, "完整检查", fmt.Sprintf("%ds", cfg.CheckIntervalSeconds),
 				"冲突巡检", fmt.Sprintf("%ds", cfg.ConflictCheckIntervalSeconds), "连接观测", fmt.Sprintf("%s / %ds", cfg.ConnectionAPIURL, cfg.ConnectionPollIntervalSeconds),
+				"操作记录", cfg.LifecycleActionFile, "操作超时", fmt.Sprintf("%ds", cfg.LifecycleActionTimeoutSeconds),
 				"配置备份", fmt.Sprintf("%s / %d份", cfg.BackupDir, cfg.BackupLimit), "日志轮转", fmt.Sprintf("%d bytes / %d份", cfg.LogMaxBytes, cfg.LogBackupCount),
 			),
-			HealthComponentIDs: []string{"controller_service"},
 		},
 	}
 	return model.RuntimeConfiguration{

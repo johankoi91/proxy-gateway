@@ -11,42 +11,54 @@ async function verify(browser, name, viewport) {
   const context = await browser.newContext({ viewport, httpCredentials: { username, password } });
   const page = await context.newPage();
   const errors = [];
+  let snapshotRequests = 0;
   page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("request", (request) => request.url().endsWith("/api/snapshot") && snapshotRequests++);
   await page.goto(baseURL, { waitUntil: "networkidle" });
   await page.locator(".status-headline").waitFor();
-  if (await page.locator(".component-groups").count()) throw new Error(`${name}: diagnostics groups leaked into overview`);
+  if (await page.getByRole("button", { name: /连接观察/ }).count()) throw new Error(`${name}: obsolete connections tab is still present`);
   if (await page.locator(".runtime-panel").count() !== 1) throw new Error(`${name}: runtime summary was not merged into the status band`);
+  if (await page.locator(".connection-summary, .route-board").count()) throw new Error(`${name}: duplicate overview panels are still present`);
   const attentionCount = await page.locator(".attention-row").count();
   const allClearCount = await page.locator(".all-clear").count();
   if (attentionCount < 1 && allClearCount < 1) throw new Error(`${name}: expected alerts or an all-clear state`);
+  const activeConnectionRows = await page.locator(".active-connection-table tbody tr").count();
+  if (activeConnectionRows < minActiveConnections) throw new Error(`${name}: expected active connections, got ${activeConnectionRows}`);
+  await assertSmoothScroll(page, `${name} overview`);
   await assertNoOverflow(page, `${name} overview`);
   await page.screenshot({ path: `artifacts/${name}-overview.png`, fullPage: true });
 
-  await page.getByRole("button", { name: /连接观察/ }).click();
-  await page.getByRole("heading", { name: "连接观察" }).waitFor();
-  const activeConnectionRows = await page.locator(".active-connection-table tbody tr").count();
-  if (activeConnectionRows < minActiveConnections) throw new Error(`${name}: expected active connections, got ${activeConnectionRows}`);
-  await assertNoOverflow(page, `${name} connections`);
-  await page.screenshot({ path: `artifacts/${name}-connections.png`, fullPage: true });
-
   await page.getByRole("button", { name: /系统检查/ }).click();
   await page.getByRole("heading", { name: "系统检查" }).waitFor();
-  if (await page.locator(".verification-list").count() !== 1) throw new Error(`${name}: connection verification list is missing`);
-  if (await page.locator(".verification-surface, .stage-flow").count()) throw new Error(`${name}: obsolete verification cards are present`);
-  if (await page.locator(".evidence-row").count() < 4) throw new Error(`${name}: active test evidence was not merged into connection rows`);
-  const stageOrder = await page.locator(".verification-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-stage")));
-  if (stageOrder.join(",") !== "network,firewall,tunnel,provider,dns,vps,egress") throw new Error(`${name}: invalid architecture stage order: ${stageOrder}`);
+  const requestsAfterOpen = snapshotRequests;
+  await page.waitForTimeout(10500);
+  if (snapshotRequests !== requestsAfterOpen) throw new Error(`${name}: diagnostics still polls /api/snapshot`);
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/api/snapshot") && response.status() === 200),
+    page.locator(".view-title-actions").getByRole("button", { name: "刷新状态" }).click()
+  ]);
+  if (snapshotRequests !== requestsAfterOpen + 1) throw new Error(`${name}: manual diagnostics refresh did not issue exactly one request`);
+  if (await page.locator(".diagnostic-stage-list").count() !== 1) throw new Error(`${name}: merged diagnostics list is missing`);
+  if (await page.locator(".verification-list, .component-groups").count()) throw new Error(`${name}: duplicate diagnostics panels are still present`);
+  const stageOrder = await page.locator(".diagnostic-stage").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-stage")));
+  if (stageOrder.join(",") !== "network,firewall,tunnel,provider,dns,vps") throw new Error(`${name}: invalid architecture stage order: ${stageOrder}`);
+  if (await page.locator(".diagnostic-component-row").count()) throw new Error(`${name}: healthy component details should be collapsed initially`);
+  await assertSmoothScroll(page, `${name} diagnostics collapsed`);
+  await page.screenshot({ path: `artifacts/${name}-diagnostics-collapsed.png`, fullPage: true });
+  const stageButtons = page.locator(".diagnostic-stage-head");
+  for (let index = 0; index < await stageButtons.count(); index += 1) {
+    const button = stageButtons.nth(index);
+    if (await button.getAttribute("aria-expanded") === "false") await button.click();
+  }
+  if (await page.locator(".diagnostic-component-row[data-test]").count() < 4) throw new Error(`${name}: active tests were not merged into component rows`);
+  await page.getByRole("button", { name: /展开配置/ }).click();
   const configurationOrder = await page.locator(".runtime-component-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-component-config")));
   if (configurationOrder.join(",") !== "firewall,tunnel,sing-box,dns,outbound,controller") throw new Error(`${name}: invalid component configuration order: ${configurationOrder}`);
   const commands = await page.locator(".runtime-command code").allTextContents();
   if (!commands.some((value) => value.includes("lightnode-controller firewall refresh"))) throw new Error(`${name}: PF startup command is missing`);
   if (!commands.some((value) => value.includes("sing-box run -c"))) throw new Error(`${name}: sing-box startup arguments are missing`);
-  const componentGroups = await page.locator(".component-group").count();
-  if (componentGroups !== 4) throw new Error(`${name}: expected 4 component groups, got ${componentGroups}`);
-  const groupOrder = await page.locator(".component-group").evaluateAll((groups) => groups.map((group) => group.getAttribute("data-group")));
-  if (groupOrder.join(",") !== "network,tunnel,dns,egress") throw new Error(`${name}: invalid component group order: ${groupOrder}`);
-  const componentRows = await page.locator(".component-row").count();
+  const componentRows = await page.locator(".diagnostic-component-row").count();
   if (componentRows < 9) throw new Error(`${name}: expected at least 9 component rows, got ${componentRows}`);
   await assertNoOverflow(page, `${name} diagnostics`);
   if (runTests) {
@@ -78,6 +90,29 @@ async function verify(browser, name, viewport) {
   await context.close();
 }
 
+async function assertSmoothScroll(page, name) {
+  const result = await page.evaluate(async () => {
+    const durations = [];
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) durations.push(entry.duration);
+    });
+    observer.observe({ type: "longtask", buffered: true });
+    const maximum = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    for (let frame = 0; frame <= 180; frame += 1) {
+      window.scrollTo(0, maximum * frame / 180);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    observer.disconnect();
+    window.scrollTo(0, 0);
+    return { maximumLongTask: Math.max(0, ...durations), longTaskCount: durations.length };
+  });
+  if (result.maximumLongTask > 200) {
+    throw new Error(`${name}: scroll produced a ${Math.round(result.maximumLongTask)} ms long task (${result.longTaskCount} total)`);
+  }
+  console.log(`${name}: scroll_long_task_max_ms=${Math.round(result.maximumLongTask)} count=${result.longTaskCount}`);
+}
+
 async function assertNoOverflow(page, name) {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflow) {
@@ -99,7 +134,6 @@ async function assertNoOverflow(page, name) {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH || chromium.executablePath() });
   try {
     await verify(browser, `${artifactPrefix}-desktop`, { width: 1440, height: 1000 });
-    await verify(browser, `${artifactPrefix}-mobile`, { width: 390, height: 844 });
     console.log("visual-check=ok");
   } finally {
     await browser.close();

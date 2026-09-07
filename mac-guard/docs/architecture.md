@@ -171,17 +171,26 @@ lightnode-controller <系统子命令>      -> 短时特权操作
 ```text
 React
   -> POST /api/actions/*
-  -> Controller
+  -> Controller 创建持久化 Action 并立即返回 actionId
+  -> 独立后台 Context（不继承浏览器取消）
   -> lightnode-controller tunnel start|pause|restart
   -> Go sysmanage
   -> 固定参数调用 launchctl/pfctl/networksetup/scutil
-  -> 重新检查
+  -> 使用新 Context 重新检查
+  -> 写入 Action 最终状态
   -> Snapshot
   -> React
 ```
 
 Go 使用 `exec.CommandContext` 和完整命令路径，不经过 `sh -c`。超时会终止子进程，
-配置文件和 PF 文件采用同目录临时文件加原子替换。
+配置文件、PF 文件和 `lifecycle-action.json` 采用同目录临时文件加原子替换。同一时间
+只允许一个生命周期或节点配置操作；Controller 重启时会读取并继续状态为 `running`
+的 Action。
+
+暂停状态不是只看标记文件。只有 `safely-paused` 存在、PF 正常、sing-box 已停止且
+TUN 不存在时才是 `maintenance`。标记存在但进程、TUN 或东京出口仍活跃时进入
+`inconsistent_locked`，产生严重告警并重新执行幂等暂停。即使处于 maintenance，PF
+完整性检查和自动修复仍继续运行。
 
 ## 9. 冲突处理
 

@@ -1,6 +1,6 @@
 # LightNode Mac Controller
 
-> 当前候选版本：`0.2.0-alpha.21`。
+> 当前候选版本：`0.2.0-alpha.32`。
 
 这是 `proxy-gateway` 下独立开发的 macOS 固定出口工程。目标是把开发 Mac
 的公网流量固定到东京 VPS `149.104.78.121`，并在隧道故障时保持断网，而不是
@@ -29,7 +29,7 @@ launchd: PF 早期引导、sing-box 与 Controller 开机守护
 
 ## 当前能力
 
-- 检查 sing-box 进程和 launchd、TUN、PF Anchor、VPS TCP 443、固定出口、
+- 检查 sing-box 进程和 launchd、TUN、PF Anchor、物理接口到 VPS TCP 443、固定出口、
   DNS、IPv6 和配置文件权限。
 - 状态区分 `healthy`、`degraded_locked` 和 `unprotected`。隧道坏但 PF 正常时
   属于故障锁定，不会误报成可用。
@@ -48,6 +48,10 @@ launchd: PF 早期引导、sing-box 与 Controller 开机守护
 - 后台提供“安全暂停”和“启动保护”。安全暂停先请求 Claude、ChatGPT 正常退出，
   再停止东京隧道，PF Kill Switch 始终保留；启动保护会恢复 TUN、DNS、PF 并
   验证东京出口，但不会自动打开 AI App。
+- 启动、暂停和重启使用持久化异步 Action；浏览器刷新、关闭或 SSH 转发中断不会
+  取消系统操作。生命周期和节点切换统一互斥，Controller 重启后会继续未完成 Action。
+- Controller 同时核对暂停标记与真实进程/TUN/出口。发现半启动状态时进入
+  `inconsistent_locked`，保留 PF 并自动重新执行暂停，不会误报为安全暂停。
 - 节点配置页直接读写现有 `config.json` 和 `sing-box.json`，不引入数据库。保存
   前使用 macOS 原生管理员确认并校验候选配置；切换失败时恢复旧节点。
 - 支持导入 VPS 后台生成的 `*.vps-config.json`。导入或手工修改前自动创建 root-only
@@ -63,8 +67,8 @@ launchd: PF 早期引导、sing-box 与 Controller 开机守护
   命中规则、出站链和流量计数。
 - 整台机器全部公网流量固定到唯一的 `tokyo` 出站。
 - 后台显示活动连接、实际东京出站和违例告警。
-- 后台采用五个任务标签：总览、连接观察、系统检查、节点配置、事件记录。总览只
-  显示安全状态、四个关键指标、流量去向和需要关注事项；底层组件不占据首屏。
+- 后台采用四个任务标签：总览、系统检查、节点配置、事件记录。连接观察已经并入
+  总览；系统检查将链路阶段、底层组件和主动验证合并为一条架构顺序列表。
 - 不再识别或标记 Claude/GPT 流量；所有连接只检查是否经过唯一的 `tokyo`
   VLESS 出站。
 - 全局日本 sing-box 模板已通过固定版本 `1.14.0` 校验。
@@ -100,6 +104,8 @@ IPv4/IPv6 出口。TUN 放行使用 `no state`，避免 PF 与用户态 TUN 的�
   行为、检查与卸载。
 - [`docs/dashboard.md`](docs/dashboard.md)：后台状态、组件数据来源、连接观察、告警、
   API 和操作边界。
+- [`docs/runtime-audit-standard.md`](docs/runtime-audit-standard.md)：安装、升级、重启和
+  日常运行后的标准走查项、通过条件、严重级别及已知缺口。
 
 ## 开发与测试
 
@@ -140,7 +146,7 @@ make pkg
 输出：
 
 ```text
-dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg
+dist/LightNode-Mac-Controller-0.2.0-alpha.32.pkg
 ```
 
 安装包内只有 `lightnode-controller`、固定版本 sing-box、launchd 配置、模板和文档。
@@ -149,7 +155,7 @@ dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg
 原生安装包可双击安装，或使用：
 
 ```bash
-sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg -target /
+sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.32.pkg -target /
 ```
 
 默认构建为未签名开发包；设置 `PKG_SIGN_IDENTITY` 后，`make pkg` 会使用对应的
@@ -162,8 +168,8 @@ PKG 新装时只启动管理服务，不会直接启用 PF；配置仍为占位�
 sing-box：
 
 ```bash
-shasum -a 256 -c dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg.sha256
-sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.21.pkg -target /
+shasum -a 256 -c dist/LightNode-Mac-Controller-0.2.0-alpha.32.pkg.sha256
+sudo installer -pkg dist/LightNode-Mac-Controller-0.2.0-alpha.32.pkg -target /
 ```
 
 然后：
@@ -207,6 +213,7 @@ sudo /usr/local/libexec/lightnode-controller uninstall --yes
 - `POST /api/actions/restart`
 - `POST /api/actions/start`
 - `POST /api/actions/pause`
+- `GET /api/actions/{id}`
 - `GET|POST /api/node`
 - `GET|POST /api/backups`
 - `POST /api/backups/{id}/restore`

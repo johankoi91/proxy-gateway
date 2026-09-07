@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,8 +84,8 @@ func TestLaunchdPlistParsing(t *testing.T) {
 	}
 }
 
-func TestMergeHealthUsesWorstState(t *testing.T) {
-	merged := mergeHealth(
+func TestMergeComponentsUsesWorstState(t *testing.T) {
+	merged := mergeComponents("DNS / IPv6",
 		model.Component{Health: model.HealthHealthy, Summary: "DNS 正常"},
 		model.Component{Health: model.HealthFailed, Summary: "IPv6 泄漏"},
 	)
@@ -100,7 +102,7 @@ func TestBuildStagesFollowArchitectureDataPath(t *testing.T) {
 		"transport": {Health: model.HealthHealthy}, "egress": {Health: model.HealthHealthy},
 	}
 	stages := buildStages(components)
-	want := []string{"network", "firewall", "tunnel", "provider", "dns", "vps", "egress"}
+	want := []string{"network", "firewall", "tunnel", "provider", "dns", "vps"}
 	if len(stages) != len(want) {
 		t.Fatalf("stage count = %d", len(stages))
 	}
@@ -151,6 +153,35 @@ func TestConnectedVPNNames(t *testing.T) {
 func TestRouteInterface(t *testing.T) {
 	if actual := routeInterface("route to: 8.8.8.8\ninterface: utun4\n"); actual != "utun4" {
 		t.Fatalf("interface = %q", actual)
+	}
+}
+
+func TestVPSProbeBindsPhysicalInterface(t *testing.T) {
+	cfg := testControllerConfig()
+	check := newChecker(cfg, ipv6Runner{})
+	var observedInterface, observedAddress string
+	client, server := net.Pipe()
+	defer server.Close()
+	check.dialPhysicalEndpoint = func(_ context.Context, interfaceName, address string, _ time.Duration) (net.Conn, error) {
+		observedInterface = interfaceName
+		observedAddress = address
+		return client, nil
+	}
+	component, result := check.checkVPS(context.Background(), time.Now().UTC(), "en0")
+	expectedAddress := net.JoinHostPort(cfg.VPSAddress, strconv.Itoa(cfg.VPSPort))
+	if observedInterface != "en0" || observedAddress != expectedAddress {
+		t.Fatalf("probe interface=%q address=%q", observedInterface, observedAddress)
+	}
+	if component.Health != model.HealthHealthy || result.Health != model.HealthHealthy || !strings.Contains(component.Detail, "en0 / pipe") {
+		t.Fatalf("component=%#v result=%#v", component, result)
+	}
+}
+
+func TestVPSProbeFailsWithoutPhysicalInterface(t *testing.T) {
+	check := newChecker(testControllerConfig(), ipv6Runner{})
+	component, result := check.checkVPS(context.Background(), time.Now().UTC(), "")
+	if component.Health != model.HealthFailed || result.Health != model.HealthFailed || result.Actual != "interface unavailable" {
+		t.Fatalf("component=%#v result=%#v", component, result)
 	}
 }
 
@@ -303,7 +334,7 @@ func TestSafelyPausedStateKeepsFirewallProtection(t *testing.T) {
 	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
 	cfg.MaintenanceFile = maintenanceFile
 	controller := NewController(cfg, ipv6Runner{}, "test")
-	controller.apply(checkOutput{components: []model.Component{
+	controller.apply(checkOutput{providerDisabled: true, components: []model.Component{
 		{ID: "firewall", Name: "PF 实时阻断", Health: model.HealthHealthy, Required: true},
 		{ID: "provider", Name: "sing-box", Health: model.HealthFailed, Required: true},
 	}})
@@ -316,15 +347,13 @@ func TestSafelyPausedStateKeepsFirewallProtection(t *testing.T) {
 	}
 }
 
-func TestLifecycleWarningIsRecorded(t *testing.T) {
+func TestLifecycleOutputIsRecorded(t *testing.T) {
 	directory := t.TempDir()
 	cfg := testControllerConfig()
 	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
-	cfg.MaintenanceFile = ""
+	cfg.LifecycleActionFile = filepath.Join(directory, "action.json")
 	controller := NewController(cfg, outputRunner{output: "INFO: ChatGPT exited normally.\nWARNING: Claude is still running.\n"}, "test")
-	if err := controller.runTunnelAction(context.Background(), []string{"test-action"}, "started", "done", "failed"); err != nil {
-		t.Fatal(err)
-	}
+	controller.recordLifecycleOutput([]byte("INFO: ChatGPT exited normally.\nWARNING: Claude is still running.\n"))
 	foundWarning := false
 	foundInfo := false
 	for _, event := range controller.Snapshot().Events {
@@ -337,5 +366,30 @@ func TestLifecycleWarningIsRecorded(t *testing.T) {
 	}
 	if !foundWarning || !foundInfo {
 		t.Fatalf("lifecycle output was not recorded: warning=%t info=%t", foundWarning, foundInfo)
+	}
+}
+
+func TestPausedRuntimeActivityIsInconsistentLocked(t *testing.T) {
+	directory := t.TempDir()
+	paused := filepath.Join(directory, "paused")
+	if err := os.WriteFile(paused, []byte("paused\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testControllerConfig()
+	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
+	cfg.MaintenanceFile = paused
+	controller := NewController(cfg, ipv6Runner{}, "test")
+	controller.apply(checkOutput{components: []model.Component{
+		{ID: "firewall", Health: model.HealthHealthy, Required: true},
+		{ID: "provider", Health: model.HealthHealthy, Required: true},
+		{ID: "tunnel", Health: model.HealthHealthy, Required: true},
+		{ID: "egress", Health: model.HealthHealthy, Required: true},
+	}})
+	snapshot := controller.Snapshot()
+	if snapshot.State != model.StateInconsistentLocked || !snapshot.Protected || snapshot.Connected {
+		t.Fatalf("state=%s protected=%t connected=%t", snapshot.State, snapshot.Protected, snapshot.Connected)
+	}
+	if len(snapshot.Alerts) == 0 || snapshot.Alerts[0].ID != "lifecycle_inconsistent" {
+		t.Fatalf("alerts=%#v", snapshot.Alerts)
 	}
 }

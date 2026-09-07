@@ -16,17 +16,19 @@ import (
 )
 
 type checkOutput struct {
-	components []model.Component
-	tests      []model.TestResult
-	observedIP string
-	physicalIF string
-	tunnelIF   string
+	components       []model.Component
+	tests            []model.TestResult
+	observedIP       string
+	physicalIF       string
+	tunnelIF         string
+	providerDisabled bool
 }
 
 type checker struct {
-	cfg    config.Config
-	runner Runner
-	client *http.Client
+	cfg                  config.Config
+	runner               Runner
+	client               *http.Client
+	dialPhysicalEndpoint func(context.Context, string, string, time.Duration) (net.Conn, error)
 }
 
 func newChecker(cfg config.Config, runner Runner) *checker {
@@ -37,11 +39,13 @@ func newChecker(cfg config.Config, runner Runner) *checker {
 			Timeout:   cfg.CheckTimeout(),
 			Transport: &http.Transport{Proxy: nil},
 		},
+		dialPhysicalEndpoint: dialPhysicalEndpoint,
 	}
 }
 
 func (c *checker) run(ctx context.Context) checkOutput {
 	now := time.Now().UTC()
+	physicalIF := c.physicalInterface(ctx)
 	components := []model.Component{
 		c.checkNetworkConflict(ctx, now),
 		c.checkProvider(ctx, now),
@@ -54,18 +58,31 @@ func (c *checker) run(ctx context.Context) checkOutput {
 		c.checkConfig(now),
 		c.checkLaunchd(ctx, now),
 	}
-	vpsComponent, vpsTest := c.checkVPS(ctx, now)
+	vpsComponent, vpsTest := c.checkVPS(ctx, now, physicalIF)
 	egressComponent, egressTest, observedIP := c.checkEgress(ctx, now)
 	dnsComponent, dnsTest := c.checkDNS(ctx, now)
 	ipv6Component, ipv6Test := c.checkIPv6(ctx, now)
 	components = append(components, vpsComponent, egressComponent, dnsComponent, ipv6Component)
 	return checkOutput{
-		components: components,
-		tests:      []model.TestResult{vpsTest, egressTest, dnsTest, ipv6Test},
-		observedIP: observedIP,
-		physicalIF: c.physicalInterface(ctx),
-		tunnelIF:   tunnelInterface(components),
+		components:       components,
+		tests:            []model.TestResult{vpsTest, egressTest, dnsTest, ipv6Test},
+		observedIP:       observedIP,
+		physicalIF:       physicalIF,
+		tunnelIF:         tunnelInterface(components),
+		providerDisabled: c.providerLaunchdDisabled(ctx),
 	}
+}
+
+func (c *checker) providerLaunchdDisabled(ctx context.Context) bool {
+	if c.cfg.ProviderLaunchDaemonLabel == "" {
+		return false
+	}
+	output, err := c.runner.Run(ctx, "launchctl", "print-disabled", "system")
+	if err != nil {
+		return false
+	}
+	expected := `"` + c.cfg.ProviderLaunchDaemonLabel + `" => disabled`
+	return strings.Contains(string(output), expected)
 }
 
 func (c *checker) checkPFBootstrapLaunchd(ctx context.Context, now time.Time) model.Component {
@@ -302,17 +319,25 @@ func (c *checker) checkProviderLaunchd(ctx context.Context, now time.Time) model
 	return component("provider_service", "sing-box launchd", model.HealthHealthy, true, "隧道守护服务已加载", c.cfg.ProviderLaunchDaemonLabel, now, started)
 }
 
-func (c *checker) checkVPS(ctx context.Context, now time.Time) (model.Component, model.TestResult) {
+func (c *checker) checkVPS(ctx context.Context, now time.Time, physicalIF string) (model.Component, model.TestResult) {
 	started := time.Now()
 	address := net.JoinHostPort(c.cfg.VPSAddress, strconv.Itoa(c.cfg.VPSPort))
-	conn, err := (&net.Dialer{Timeout: c.cfg.CheckTimeout()}).DialContext(ctx, "tcp", address)
-	if err != nil {
-		comp := component("transport", "VPS TCP 443", model.HealthFailed, true, "VPS 传输不可达", err.Error(), now, started)
-		return comp, test("vps_tcp", "VPS TCP 443", model.HealthFailed, address, err.Error(), err.Error(), now, started)
+	if physicalIF == "" {
+		detail := "无法识别当前物理网络接口"
+		comp := component("transport", "VPS 物理 Endpoint", model.HealthFailed, true, "物理 Endpoint 未验证", detail, now, started)
+		return comp, test("vps_tcp", "VPS 物理 Endpoint", model.HealthFailed, address, "interface unavailable", detail, now, started)
 	}
+	conn, err := c.dialPhysicalEndpoint(ctx, physicalIF, address, c.cfg.CheckTimeout())
+	if err != nil {
+		detail := fmt.Sprintf("%s -> %s: %v", physicalIF, address, err)
+		comp := component("transport", "VPS 物理 Endpoint", model.HealthFailed, true, "物理 Endpoint 不可达", detail, now, started)
+		return comp, test("vps_tcp", "VPS 物理 Endpoint", model.HealthFailed, address, "unavailable via "+physicalIF, detail, now, started)
+	}
+	localAddress := conn.LocalAddr().String()
 	_ = conn.Close()
-	comp := component("transport", "VPS TCP 443", model.HealthHealthy, true, "VPS 传输可达", address, now, started)
-	return comp, test("vps_tcp", "VPS TCP 443", model.HealthHealthy, address, "connected", "TCP 建连成功", now, started)
+	detail := fmt.Sprintf("%s / %s -> %s", physicalIF, localAddress, address)
+	comp := component("transport", "VPS 物理 Endpoint", model.HealthHealthy, true, "物理 Endpoint 可达", detail, now, started)
+	return comp, test("vps_tcp", "VPS 物理 Endpoint", model.HealthHealthy, address, physicalIF+" / "+localAddress, "物理接口 TCP 建连成功", now, started)
 }
 
 func (c *checker) checkEgress(ctx context.Context, now time.Time) (model.Component, model.TestResult, string) {
