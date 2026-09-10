@@ -9,9 +9,37 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function normalizeSnapshot(snapshot: Snapshot): Snapshot {
+  return {
+    ...snapshot,
+    components: snapshot.components || [],
+    stages: snapshot.stages || [],
+    tests: snapshot.tests || [],
+    alerts: snapshot.alerts || [],
+    events: snapshot.events || [],
+    connections: snapshot.connections ? {
+      ...snapshot.connections,
+      activeConnections: snapshot.connections.activeConnections || []
+    } : {
+      health: "unknown",
+      message: "连接数据尚未就绪",
+      activeConnections: [],
+      violationCount: 0
+    },
+    runtimeConfig: snapshot.runtimeConfig ? {
+      ...snapshot.runtimeConfig,
+      components: snapshot.runtimeConfig.components || []
+    } : snapshot.runtimeConfig
+  };
+}
+
+async function snapshotRequest(path: string, init?: RequestInit) {
+  return normalizeSnapshot(await request<Snapshot>(path, init));
+}
+
 export const api = {
-  snapshot: () => request<Snapshot>("/api/snapshot"),
-  runTests: () => request<Snapshot>("/api/tests/run", { method: "POST" }),
+  snapshot: () => snapshotRequest("/api/snapshot"),
+  runTests: () => snapshotRequest("/api/tests/run", { method: "POST" }),
   restart: () => request<LifecycleAction>("/api/actions/restart", { method: "POST" }),
   start: () => request<LifecycleAction>("/api/actions/start", { method: "POST" }),
   pause: () => request<LifecycleAction>("/api/actions/pause", { method: "POST" }),

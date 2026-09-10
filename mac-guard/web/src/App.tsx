@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, AlertTriangle, Archive, BrainCircuit, CheckCircle2, ChevronDown, ChevronRight,
+  AlertTriangle, Archive, BrainCircuit, CheckCircle2, ChevronDown, ChevronRight,
   CircleHelp, Database, FileClock, Globe2, House, Network, Play,
   Power, PowerOff, RefreshCw, RotateCcw, Route, Save, Server, Shield, ShieldCheck, Stethoscope,
   Settings2, Upload, Wifi, XCircle
@@ -15,7 +15,7 @@ type View = "overview" | "diagnostics" | "node" | "events";
 
 const stateLabels: Record<ControllerState, { label: string; detail: string }> = {
   boot_locked: { label: "正在启动", detail: "等待首轮网络检查" },
-  healthy: { label: "网络保护正常", detail: "出口与防泄漏策略均符合预期" },
+  healthy: { label: "网络保护正常", detail: "整机流量经东京，线路故障时阻断本地回落" },
   degraded_locked: { label: "已安全断网", detail: "线路异常，Kill Switch 正在阻止本地回落" },
   inconsistent_locked: { label: "状态不一致", detail: "保护标记与真实网络状态冲突，正在恢复安全状态" },
   unprotected: { label: "尚未启用断网保护", detail: "当前线路可用，但断线时仍可能回落到本地网络" },
@@ -53,6 +53,7 @@ export default function App() {
   const [view, setView] = useState<View>("overview");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<"refresh" | "tests" | "restart" | "start" | "pause" | "">("");
+  const [testStep, setTestStep] = useState(0);
   const scrolling = useRef(false);
   const pendingSnapshot = useRef<Snapshot | null>(null);
   const scrollTimer = useRef<number | null>(null);
@@ -128,12 +129,16 @@ export default function App() {
 
   async function runTests() {
     setBusy("tests");
+    setTestStep(0);
+    const progressInterval = snapshot?.state === "maintenance" ? 1000 : 700;
+    const progressTimer = window.setInterval(() => setTestStep((current) => Math.min(current + 1, 3)), progressInterval);
     try {
       setSnapshot(await api.runTests());
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "测试执行失败");
     } finally {
+      window.clearInterval(progressTimer);
       setBusy("");
     }
   }
@@ -181,7 +186,6 @@ export default function App() {
       <header className="topbar">
         <div className="brand"><Shield size={21} /><span>LightNode Controller</span></div>
         <div className="toolbar">
-          <button className="icon-button" onClick={() => void load()} title="刷新状态" aria-label="刷新状态"><RefreshCw size={18} className={busy === "refresh" ? "spin" : ""} /></button>
           <button className="tool-button" onClick={() => void runTests()} disabled={Boolean(busy)}><Play size={16} />运行检查</button>
           {snapshot?.state === "maintenance" || snapshot?.state === "inconsistent_locked"
             ? <button className="tool-button" onClick={() => void start()} disabled={Boolean(busy) || actionRunning}><Power size={16} />启动保护</button>
@@ -201,24 +205,88 @@ export default function App() {
 
       <main>
         {error && <div className="page-width error-banner"><XCircle size={18} />{error}</div>}
-        {snapshot?.action?.status === "running" && <div className="page-width action-banner"><RefreshCw size={17} className="spin" /><span><strong>{snapshot.action.message}</strong><small>操作 ID {snapshot.action.id}，关闭页面不会中止</small></span></div>}
-        {view === "overview" && <Overview snapshot={snapshot} headline={headline} abnormalCount={abnormalCount} onNavigate={setView} />}
+        {view === "overview" && <Overview snapshot={snapshot} headline={headline} onNavigate={setView} />}
         {view === "diagnostics" && <Diagnostics snapshot={snapshot} onRefresh={() => void load()} refreshing={busy === "refresh"} />}
         {view === "node" && <NodeSettings />}
         {view === "events" && <Events snapshot={snapshot} />}
       </main>
+      <TaskOverlay busy={busy} action={snapshot?.action} testStep={testStep} paused={snapshot?.state === "maintenance"} />
     </div>
   );
+}
+
+function TaskOverlay({ busy, action, testStep, paused }: {
+  busy: "refresh" | "tests" | "restart" | "start" | "pause" | "";
+  action?: LifecycleAction;
+  testStep: number;
+  paused: boolean;
+}) {
+  const runningAction = action?.status === "running" ? action : undefined;
+  const kind = busy === "tests" ? "tests" : busy === "start" || busy === "pause" || busy === "restart" ? busy : runningAction?.kind;
+  if (!kind) return null;
+
+  const content = taskOverlayContent(kind, paused);
+  const currentStep = kind === "tests" ? testStep : lifecycleStep(runningAction?.phase);
+  const detail = kind === "tests" ? content.details[currentStep] : runningAction?.message || content.details[currentStep];
+  return <div className="task-overlay" role="dialog" aria-modal="true" aria-live="polite" aria-label={content.title}>
+    <div className="task-progress-panel">
+      <RefreshCw size={28} className="spin" />
+      <div className="task-progress-copy">
+        <h2>{content.title}</h2>
+        <p>{detail}</p>
+      </div>
+      <ol className="task-steps">{content.steps.map((step, index) =>
+        <li className={index < currentStep ? "complete" : index === currentStep ? "active" : "pending"} key={step}>
+          <span>{index < currentStep ? <CheckCircle2 size={17} /> : index + 1}</span>
+          <strong>{step}</strong>
+        </li>
+      )}</ol>
+      <small>任务完成后页面会自动恢复操作</small>
+    </div>
+  </div>;
+}
+
+function lifecycleStep(phase?: string) {
+  if (phase === "verifying" || phase === "finished") return 2;
+  if (phase === "executing") return 1;
+  return 0;
+}
+
+function taskOverlayContent(kind: "tests" | "start" | "pause" | "restart", paused: boolean) {
+  if (kind === "tests" && paused) return {
+    title: "正在检查安全暂停状态",
+    steps: ["检查断线保护", "确认东京线路已停止", "验证 DNS 与 IPv6", "汇总检查结果"],
+    details: ["确认 PF 仍在阻断本地公网", "确认 sing-box 和 TUN 已按计划停止", "确认 DNS 未回落且 IPv6 仍被阻断", "整理安全暂停状态和检查结果"]
+  };
+  if (kind === "tests") return {
+    title: "正在运行系统检查",
+    steps: ["读取网络状态", "检查东京线路", "验证防泄漏", "汇总检查结果"],
+    details: ["读取 PF、TUN、sing-box 和当前网络接口", "连接东京服务器并核对公网出口", "验证 DNS 路径和 IPv6 阻断", "整理组件状态、告警和检查结果"]
+  };
+  if (kind === "pause") return {
+    title: "正在安全暂停",
+    steps: ["登记暂停任务", "停止东京隧道", "确认断网保护"],
+    details: ["创建可恢复的后台任务", "请求受保护应用退出并停止 sing-box", "确认 PF 继续阻断本地公网"]
+  };
+  if (kind === "start") return {
+    title: "正在启动保护",
+    steps: ["登记启动任务", "启动东京隧道", "验证出口与防泄漏"],
+    details: ["创建可恢复的后台任务", "启动 sing-box 并恢复 TUN 与 DNS", "核对 PF、DNS、IPv6 和东京出口"]
+  };
+  return {
+    title: "正在重启东京线路",
+    steps: ["登记重启任务", "重建东京隧道", "验证出口与防泄漏"],
+    details: ["创建可恢复的后台任务", "重启 sing-box 并恢复 TUN 与 DNS", "核对 PF、DNS、IPv6 和东京出口"]
+  };
 }
 
 function Tab({ active, onClick, icon, label, badge }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; badge?: number }) {
   return <button className={active ? "tab-button active" : "tab-button"} onClick={onClick}>{icon}<span>{label}</span>{badge ? <b>{badge}</b> : null}</button>;
 }
 
-function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
+function Overview({ snapshot, headline, onNavigate }: {
   snapshot: Snapshot | null;
   headline: { label: string; detail: string };
-  abnormalCount: number;
   onNavigate: (view: View) => void;
 }) {
   const connections = snapshot?.connections;
@@ -230,25 +298,15 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
     <section className={`status-band tone-${tone}`}>
       <div className="page-width status-grid">
         <div className="state-block">
-          <span className="eyebrow">当前状态</span>
           <div className="state-title"><StateIcon state={snapshot?.state} /><h1 className="status-headline">{headline.label}</h1></div>
           <p>{headline.detail}</p>
-          <div className="mode-line"><span>整机东京 · 严格执行</span><small>更新于 {formatTime(snapshot?.lastCheckAt || "")}</small></div>
+          <small className="status-updated">更新于 {formatTime(snapshot?.lastCheckAt || "")}</small>
         </div>
         <div className="health-grid">
           <HealthItem icon={<Globe2 size={18} />} label="东京出口" value={snapshot?.observedEgress || "不可用"} health={snapshot?.observedEgress && snapshot.observedEgress === snapshot.expectedEgress ? "healthy" : "failed"} />
           <HealthItem icon={<Route size={18} />} label="TUN 隧道" value={snapshot?.tunnelInterface || "未建立"} health={tunnel?.health || "unknown"} />
           <HealthItem icon={<Database size={18} />} label="DNS" value={dns?.health === "healthy" ? "经隧道" : "异常"} health={dns?.health || "unknown"} />
           <HealthItem icon={<Shield size={18} />} label="断网保护" value={snapshot?.protected ? "已启用" : "未启用"} health={pf?.health || "unknown"} />
-        </div>
-        <div className="runtime-panel">
-          <div className="runtime-panel-head"><Activity size={17} /><strong>运行概况</strong></div>
-          <div className="runtime-mini-grid">
-            <RuntimeFact label="连接观测" value={connections?.health === "healthy" ? "在线" : "未连接"} health={connections?.health || "unknown"} />
-            <RuntimeFact label="活动连接" value={`${connections?.activeConnections.length || 0} 条`} />
-            <RuntimeFact label="出口违例" value={`${connections?.violationCount || 0} 条`} health={connections?.violationCount ? "failed" : "healthy"} />
-            <RuntimeFact label="异常组件" value={`${abnormalCount} 项`} health={abnormalCount ? "failed" : "healthy"} />
-          </div>
         </div>
       </div>
     </section>
@@ -268,16 +326,17 @@ function Overview({ snapshot, headline, abnormalCount, onNavigate }: {
 }
 
 function ConnectionSection({ observation }: { observation: ConnectionObservation }) {
+  const activeConnections = observation.activeConnections || [];
   return <section className="connection-workbench">
     <SectionTitle icon={<BrainCircuit size={19} />} title="实时连接" meta={`最后采集 ${formatTime(observation.lastSuccessfulPollAt || "")}`} />
     <div className="connection-table-wrap"><table className="connection-table active-connection-table">
       <thead><tr><th>进程</th><th>目标</th><th>实际出站</th><th>结果</th><th>流量</th></tr></thead>
-      <tbody>{observation.activeConnections.slice(0, 100).map((connection) => <tr key={connection.id}>
+      <tbody>{activeConnections.slice(0, 100).map((connection) => <tr key={connection.id}>
         <td><strong>{processName(connection.processPath)}</strong><code>{connection.processPath || "unknown"}</code></td>
         <td><strong>{connection.host || connection.destinationIp || "unknown"}</strong><code>{connection.network}/{connection.destinationPort}</code></td>
         <td><code>{connection.observedOutbound || "-"}</code></td>
         <td><HealthBadge health={connection.compliant ? "healthy" : "failed"} /></td><td>{formatBytes(connection.upload + connection.download)}</td>
-      </tr>)}{!observation.activeConnections.length && <tr><td colSpan={5} className="empty">当前没有活动连接</td></tr>}</tbody>
+      </tr>)}{!activeConnections.length && <tr><td colSpan={5} className="empty">当前没有活动连接</td></tr>}</tbody>
     </table></div>
   </section>;
 }
@@ -318,7 +377,82 @@ function Diagnostics({ snapshot, onRefresh, refreshing }: { snapshot: Snapshot |
 }
 
 function Events({ snapshot }: { snapshot: Snapshot | null }) {
-  return <div className="page-width view-content"><ViewTitle icon={<FileClock size={22} />} title="事件记录" detail={`${snapshot?.events.length || 0} 条状态变化`} /><div className="timeline">{(snapshot?.events || []).map((event) => <div className={`timeline-row event-${event.severity}`} key={event.id}><span className="timeline-dot" /><time>{formatDateTime(event.time)}</time><code>{event.component}</code><p>{event.message}</p></div>)}{!snapshot?.events.length && <div className="empty">等待状态变化</div>}</div></div>;
+  const [showTechnical, setShowTechnical] = useState(false);
+  const events = snapshot?.events || [];
+  const visibleEvents = showTechnical ? events : events.filter(isImportantEvent).slice(0, 40);
+  return <div className="page-width view-content">
+    <ViewTitle
+      icon={<FileClock size={22} />}
+      title="事件记录"
+      detail={showTechnical ? `${visibleEvents.length} 条全部记录` : `最近 ${visibleEvents.length} 条重要记录`}
+      action={<button className="secondary-command" type="button" onClick={() => setShowTechnical((current) => !current)}>{showTechnical ? "仅看重要事件" : "显示技术记录"}</button>}
+    />
+    <div className="timeline">{visibleEvents.map((event) => <div className={`timeline-row event-${event.severity}`} key={event.id}>
+      <span className="timeline-dot" />
+      <time>{formatDateTime(event.time)}</time>
+      <span className="event-scope">{eventScope(event.component)}</span>
+      <p>{friendlyEventMessage(event.message)}</p>
+    </div>)}{!visibleEvents.length && <div className="empty">暂无重要事件</div>}</div>
+  </div>;
+}
+
+function isImportantEvent(event: { component: string; severity: string; message: string }) {
+  if (event.severity === "critical" || event.severity === "error" || event.severity === "warning") return true;
+  if (event.component === "controller" && event.message !== "首次组件检查完成") return true;
+  return event.component === "provider" && /东京保护|东京隧道/.test(event.message);
+}
+
+function eventScope(componentID: string) {
+  return ({
+    controller: "系统状态",
+    provider: "东京线路",
+    provider_service: "线路服务",
+    tunnel: "网络隧道",
+    egress: "公网出口",
+    transport: "服务器连接",
+    dns: "DNS 防泄漏",
+    ipv6: "IPv6 防泄漏",
+    firewall: "断线保护",
+    firewall_config: "规则持久化",
+    firewall_binding: "必要路径",
+    pf_bootstrap_service: "开机保护",
+    network_conflict: "网络冲突",
+    config: "线路配置",
+    controller_service: "管理服务",
+    connection_observer: "连接检查"
+  } as Record<string, string>)[componentID] || "系统组件";
+}
+
+function friendlyEventMessage(message: string) {
+  const exact: Record<string, string> = {
+    "保护状态变更: boot_locked -> healthy": "开机检查完成，网络保护正常",
+    "保护状态变更: boot_locked -> degraded_locked": "开机检查发现线路异常，已保持安全断网",
+    "保护状态变更: recovering -> degraded_locked": "东京线路尚未恢复，已继续阻断本地回落",
+    "保护状态变更: degraded_locked -> healthy": "网络保护已恢复正常",
+    "保护状态变更: healthy -> degraded_locked": "检测到线路异常，已阻止流量回落到本地网络",
+    "保护状态变更: recovering -> maintenance": "东京隧道已停止，整机保持安全断网",
+    "保护状态变更: maintenance -> recovering": "正在恢复东京线路",
+    "保护状态变更: healthy -> recovering": "正在重新建立东京线路",
+    "首次组件检查完成": "启动检查完成",
+    "TUN 接口: 未找到预期 TUN": "未检测到东京网络隧道，已保持安全断网",
+    "公网出口: healthy -> failed": "东京公网出口验证失败，已阻止本地回落",
+    "VPS 物理 Endpoint: healthy -> failed": "无法连接东京服务器，已保持安全断网",
+    "隧道 DNS: healthy -> failed": "隧道 DNS 异常，已阻止使用本地 DNS",
+    "PF 异常后已重新加载受控 Anchor": "断网保护规则异常，系统已自动恢复",
+    "已为当前网络服务重新设置隧道 DNS": "DNS 设置偏离，系统已自动恢复隧道 DNS"
+  };
+  if (exact[message]) return exact[message];
+  const transition = message.match(/^(.+): (healthy|failed|degraded|unknown) -> (healthy|failed|degraded|unknown)$/);
+  if (transition) {
+    const target = transition[1].replace("sing-box launchd", "东京线路后台服务").replace("sing-box", "东京线路").replace("TUN 接口", "网络隧道").replace("VPS 物理 Endpoint", "东京服务器连接").replace("公网出口", "东京公网出口").replace("隧道 DNS", "隧道 DNS");
+    const result = transition[3] === "healthy" ? "已恢复正常" : transition[3] === "failed" ? "发生异常" : "需要检查";
+    return `${target}${result}`;
+  }
+  return [
+    ["degraded_locked", "安全断网"], ["boot_locked", "启动保护"],
+    ["recovering", "正在恢复"], ["maintenance", "安全暂停"],
+    ["healthy", "正常"], ["failed", "异常"]
+  ].reduce((result, [source, replacement]) => result.split(source).join(replacement), message);
 }
 
 const emptyNodeForm: NodeUpdate = {
@@ -453,26 +587,36 @@ function NodeSettings() {
         <button type="button" className="secondary-command" disabled={busy} onClick={() => void createBackup()}><Archive size={17} />立即备份</button>
       </div>
     </section>
-    <form onSubmit={(event) => void save(event)}>
-      <section className="node-form-section">
-        <SectionTitle icon={<Globe2 size={18} />} title="服务器与出口" meta="当前东京节点为默认值" />
+    <form className="node-json-form" onSubmit={(event) => void save(event)}>
+      <JSONSection path="endpoint" description="服务器入口与固定出口">
         <div className="node-form-grid">
-          <Field label="VPS IPv4"><input value={form.server} onChange={(event) => update("server", event.target.value)} required /></Field>
-          <Field label="VLESS 端口"><input type="number" min="1" max="65535" value={form.port} onChange={(event) => update("port", Number(event.target.value))} required /></Field>
-          <Field label="期望出口 IPv4"><input value={form.expectedEgress} onChange={(event) => update("expectedEgress", event.target.value)} required /></Field>
-          <Field label="Flow"><select value={form.flow} onChange={(event) => update("flow", event.target.value)}><option value="xtls-rprx-vision">xtls-rprx-vision</option></select></Field>
-          <Field label="TLS Server Name"><input value={form.tlsServerName} onChange={(event) => update("tlsServerName", event.target.value)} required /></Field>
-          <Field label="uTLS 指纹"><select value={form.utlsFingerprint} onChange={(event) => update("utlsFingerprint", event.target.value)}><option value="chrome">chrome</option><option value="safari">safari</option><option value="firefox">firefox</option></select></Field>
+          <Field label="address" description="VPS IPv4"><input value={form.server} onChange={(event) => update("server", event.target.value)} required /></Field>
+          <Field label="port" description="服务端口"><input type="number" min="1" max="65535" value={form.port} onChange={(event) => update("port", Number(event.target.value))} required /></Field>
+          <Field label="expectedEgress" description="期望公网出口"><input value={form.expectedEgress} onChange={(event) => update("expectedEgress", event.target.value)} required /></Field>
         </div>
-      </section>
-      <section className="node-form-section">
-        <SectionTitle icon={<Shield size={18} />} title="访问凭据" meta="留空保留当前值" />
-        <div className="node-form-grid node-secret-grid">
-          <SecretField label="VLESS UUID" configured={configuration?.uuidConfigured}><input type="password" autoComplete="new-password" placeholder="保留当前值" value={form.uuid || ""} onChange={(event) => update("uuid", event.target.value)} /></SecretField>
-          <SecretField label="Reality Public Key" configured={configuration?.realityPublicKeyConfigured}><input type="password" autoComplete="new-password" placeholder="保留当前值" value={form.realityPublicKey || ""} onChange={(event) => update("realityPublicKey", event.target.value)} /></SecretField>
-          <SecretField label="Reality Short ID" configured={configuration?.realityShortIdConfigured}><input type="password" autoComplete="new-password" placeholder="保留当前值" value={form.realityShortId || ""} onChange={(event) => update("realityShortId", event.target.value)} /></SecretField>
+      </JSONSection>
+      <JSONSection path="vless" description="VLESS 客户端参数">
+        <div className="node-form-grid">
+          <SecretField label="uuid" description="客户端身份" configured={configuration?.uuidConfigured}><input type="password" autoComplete="new-password" placeholder="留空保留当前值" value={form.uuid || ""} onChange={(event) => update("uuid", event.target.value)} /></SecretField>
+          <Field label="flow" description="流控模式"><select value={form.flow} onChange={(event) => update("flow", event.target.value)}><option value="xtls-rprx-vision">xtls-rprx-vision</option></select></Field>
+          <ReadOnlyField label="transport" description="传输协议" value="tcp" />
+          <ReadOnlyField label="encryption" description="额外加密" value="none" />
         </div>
-      </section>
+        <JSONSection path="vless.tls" description="TLS 与客户端指纹" nested>
+          <div className="node-form-grid">
+            <ReadOnlyField label="enabled" description="TLS" value="true" />
+            <Field label="serverName" description="伪装域名"><input value={form.tlsServerName} onChange={(event) => update("tlsServerName", event.target.value)} required /></Field>
+            <Field label="utlsFingerprint" description="客户端指纹"><select value={form.utlsFingerprint} onChange={(event) => update("utlsFingerprint", event.target.value)}><option value="chrome">chrome</option><option value="safari">safari</option><option value="firefox">firefox</option></select></Field>
+          </div>
+          <JSONSection path="vless.tls.reality" description="Reality 服务端身份" nested>
+            <div className="node-form-grid">
+              <ReadOnlyField label="enabled" description="Reality" value="true" />
+              <SecretField label="publicKey" description="服务端公钥" configured={configuration?.realityPublicKeyConfigured}><input type="password" autoComplete="new-password" placeholder="留空保留当前值" value={form.realityPublicKey || ""} onChange={(event) => update("realityPublicKey", event.target.value)} /></SecretField>
+              <SecretField label="shortId" description="握手标识" configured={configuration?.realityShortIdConfigured}><input type="password" autoComplete="new-password" placeholder="留空保留当前值" value={form.realityShortId || ""} onChange={(event) => update("realityShortId", event.target.value)} /></SecretField>
+            </div>
+          </JSONSection>
+        </JSONSection>
+      </JSONSection>
       <div className="node-form-actions"><button className="primary-command" type="submit" disabled={busy || !configuration}><Save size={17} />{busy ? "正在验证并切换" : "保存并切换"}</button></div>
     </form>
     <section className="node-backup-section">
@@ -489,12 +633,24 @@ function NodeSettings() {
   </div>;
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="field"><span>{label}</span>{children}</label>;
+function JSONSection({ path, description, nested = false, children }: { path: string; description: string; nested?: boolean; children: React.ReactNode }) {
+  const key = path.split(".").pop();
+  return <section className={nested ? "node-json-object nested" : "node-json-object"}>
+    <div className="node-json-heading"><code>{key}</code><span>{description}</span></div>
+    {children}
+  </section>;
 }
 
-function SecretField({ label, configured, children }: { label: string; configured?: boolean; children: React.ReactNode }) {
-  return <label className="field"><span>{label}<small className={configured ? "configured" : "missing"}>{configured ? "已配置" : "未配置"}</small></span>{children}</label>;
+function Field({ label, description, children }: { label: string; description: string; children: React.ReactNode }) {
+  return <label className="field"><span><code>{label}</code><small>{description}</small></span>{children}</label>;
+}
+
+function SecretField({ label, description, configured, children }: { label: string; description: string; configured?: boolean; children: React.ReactNode }) {
+  return <label className="field"><span><code>{label}</code><small>{description}</small><b className={configured ? "configured" : "missing"}>{configured ? "已配置" : "未配置"}</b></span>{children}</label>;
+}
+
+function ReadOnlyField({ label, description, value }: { label: string; description: string; value: string }) {
+  return <div className="field readonly-field"><span><code>{label}</code><small>{description}</small></span><code>{value}</code></div>;
 }
 
 function ViewTitle({ icon, title, detail, health, action }: { icon: React.ReactNode; title: string; detail: string; health?: Health; action?: React.ReactNode }) {
@@ -513,10 +669,6 @@ function ActionSectionTitle({ icon, title, action, expanded, onClick }: {
 
 function HealthItem({ icon, label, value, health }: { icon: React.ReactNode; label: string; value: string; health: Health }) {
   return <div className="health-item"><span className={`health-dot health-${health}`}>{icon}</span><div><small>{label}</small><strong>{value}</strong></div></div>;
-}
-
-function RuntimeFact({ label, value, health = "unknown" }: { label: string; value: string; health?: Health }) {
-  return <div className="runtime-fact"><span>{label}</span><strong className={`health-${health}`}>{value}</strong></div>;
 }
 
 function RuntimeConfigRow({ configuration }: { configuration: RuntimeComponentConfiguration }) {
@@ -542,17 +694,93 @@ function DiagnosticStageRow({ stage, components, tests }: { stage: Stage; compon
     {expanded && <div className="diagnostic-component-list">{components.map((item) => {
       const testID = componentTestIDs[item.id];
       const test = testID ? tests.find((candidate) => candidate.id === testID) : undefined;
+      const presentation = diagnosticPresentation(item, test);
       return <div className="diagnostic-component-row" data-component={item.id} data-test={test?.id} key={item.id}>
         <HealthIcon health={item.health} size={15} />
-        <div className="diagnostic-component-copy"><strong>{item.name}</strong><span>{item.summary}</span></div>
+        <div className="diagnostic-component-copy"><strong>{presentation.name}</strong><span>{presentation.summary}</span></div>
         <div className="diagnostic-evidence">
-          <small>{test ? "主动验证" : "当前值"}</small>
-          <code>{test ? `${test.expected} → ${test.actual || "-"}` : item.detail || "-"}</code>
+          <small>{presentation.evidenceLabel}</small>
+          <code>{presentation.evidence}</code>
         </div>
-        <small>{test?.durationMs ?? item.latencyMs} ms · {formatTime(test?.runAt || item.lastCheckedAt)}</small>
+        <small>{test ? `验证于 ${formatTime(test.runAt)} · 耗时 ${test.durationMs} ms` : `检查于 ${formatTime(item.lastCheckedAt)}`}</small>
       </div>;
     })}{!components.length && <div className="empty">等待组件检查</div>}</div>}
   </section>;
+}
+
+function diagnosticPresentation(item: ComponentStatus, test?: TestResult) {
+  if (item.health === "healthy") {
+    switch (item.id) {
+      case "firewall":
+        return {
+          name: "断线保护",
+          summary: "东京线路故障时阻断 IPv4/IPv6 本地回落",
+          evidenceLabel: "状态",
+          evidence: "已启用"
+        };
+      case "firewall_config":
+        return {
+          name: "规则持久化",
+          summary: "重启或规则刷新后会恢复断网保护",
+          evidenceLabel: "配置",
+          evidence: "已持久化"
+        };
+      case "firewall_binding":
+        return {
+          name: "必要路径放行",
+          summary: "物理网络只放行建立东京隧道所需路径",
+          evidenceLabel: "当前网卡",
+          evidence: item.detail || "已识别"
+        };
+      case "pf_bootstrap_service":
+        return {
+          name: "开机保护",
+          summary: "用户登录前加载断网规则",
+          evidenceLabel: "服务",
+          evidence: "已加载"
+        };
+      case "dns":
+        return {
+          name: "DNS 防泄漏",
+          summary: "域名查询使用隧道 DNS",
+          evidenceLabel: "验证结果",
+          evidence: "解析成功，未使用本地 DNS"
+        };
+      case "ipv6": {
+        const capturedByTunnel = Boolean(test?.actual && /^\d{1,3}(\.\d{1,3}){3}$/.test(test.actual));
+        return {
+          name: "IPv6 防泄漏",
+          summary: capturedByTunnel ? "IPv6 请求由东京隧道接管" : "本地公网 IPv6 已阻断",
+          evidenceLabel: "验证结果",
+          evidence: capturedByTunnel ? `未发现本地 IPv6；请求出口为 ${test?.actual}` : "未发现可用的本地公网 IPv6"
+        };
+      }
+    }
+  }
+  if (item.id === "transport" && test) {
+    const [interfaceName = "物理网卡", localAddress = ""] = (test.actual || "").split(" / ");
+    const localIP = localAddress.replace(/:\d+$/, "");
+    return {
+      name: "东京服务器连接",
+      summary: item.health === "healthy" ? "物理网络可直达东京服务器" : item.summary,
+      evidenceLabel: "实际路径",
+      evidence: `${interfaceName}${localIP ? `（${localIP}）` : ""}直连 ${test.expected}`
+    };
+  }
+  if (item.id === "egress" && test) {
+    return {
+      name: "公网出口",
+      summary: item.health === "healthy" ? "互联网流量从东京服务器发出" : item.summary,
+      evidenceLabel: "出口核对",
+      evidence: `期望 ${test.expected} · 实际 ${test.actual || "不可用"}`
+    };
+  }
+  return {
+    name: item.name,
+    summary: item.summary,
+    evidenceLabel: test ? "主动验证结果" : "当前值",
+    evidence: test ? `${test.expected} → ${test.actual || "-"}` : item.detail || "-"
+  };
 }
 
 function HealthBadge({ health }: { health: Health }) {

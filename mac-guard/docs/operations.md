@@ -35,7 +35,11 @@ sudo installer -pkg LightNode-Mac-Controller-0.2.0-alpha.32.pkg -target /
 
 ## 3. 首次配置
 
-1. 将真实 VLESS UUID、Reality 公钥、short ID 和 Clash API Secret 写入：
+1. 推荐从东京 VPS 管理后台下载该客户端的 `*.vps-config.json`，在 Controller 的
+   “节点配置”页面导入。文件包含 Endpoint、期望出口、VLESS、TLS 和 Reality 参数。
+
+   只有没有导出文件时，才手工将真实 VLESS UUID、Reality 公钥、short ID 和 Clash
+   API Secret 写入：
 
    ```text
    /Library/Application Support/LightNodeController/sing-box.json
@@ -98,6 +102,10 @@ sudo /usr/local/libexec/lightnode-controller tunnel pause
 ```
 
 ## 5. 安全暂停
+
+安全暂停期间的“运行检查”使用快速防回落检查，不等待正常互联网、DNS 或 IPv6 请求
+成功。检查会验证公网访问被阻断、DNS 仍固定为隧道地址、IPv6 没有旁路，并将已停止
+的 sing-box、launchd 和 TUN 展示为“已按计划停止”。正常情况下数秒内完成。
 
 后台“安全暂停”和 CLI 使用同一流程：
 
@@ -205,7 +213,7 @@ alerts=[]
 
 | 故障 | 状态 | 公网结果 | 自动动作 |
 | --- | --- | --- | --- |
-| VPS 不可达 | `degraded_locked` | 阻断 | launchd/Controller 重试 |
+| VPS 不可达 | `degraded_locked` | 阻断 | 持续探测；当前不自动重启仍存活的隧道进程 |
 | sing-box 崩溃 | `degraded_locked` | 阻断 | 重启 sing-box |
 | DNS 偏离 | `degraded_locked` | 不回落 | 恢复 `172.19.0.2` |
 | PF 异常 | `unprotected` 或告警 | 视实时 PF 而定 | 高优先级重载 |
@@ -215,6 +223,10 @@ alerts=[]
 | 安全暂停 | `maintenance` | 主动阻断 | 不自动恢复 |
 
 自动修复有 30 秒限频，冲突轻量巡检每 2 秒执行，完整检查默认每 10 秒执行。
+
+后台执行运行检查、安全暂停、启动保护或重启线路时显示全屏任务层。生命周期任务的
+排队、执行和验证阶段来自持久化 Action；页面刷新或 SSH 转发中断不会取消任务。任务
+完成或失败后任务层自动解除。
 
 ## 9. 日志与事件
 
@@ -229,6 +241,9 @@ alerts=[]
 
 `events.jsonl` 记录状态变化、自动恢复、策略违例和暂停结果，不记录消息正文、Token、
 Cookie 或数据包载荷。上述日志达到 5 MiB 时轮转，默认保留 `.1` 到 `.3`。
+
+事件页默认只显示最近 40 条中文重要记录；逐组件状态变化保留在“显示技术记录”和
+`events.jsonl` 中。
 
 ## 10. 解除保护与完整卸载
 
@@ -266,6 +281,18 @@ sudo /usr/local/libexec/lightnode-controller uninstall --yes
 
 后台“节点配置”默认读取当前 Endpoint、出口、flow、TLS SNI 和 uTLS 指纹。UUID、
 Reality 公钥和 short ID 不回传浏览器；对应输入框留空表示保留旧值。
+
+页面字段顺序与 `lightnode.vps-config` v1 一致：
+
+```text
+endpoint: address, port, expectedEgress
+vless: uuid, flow, transport, encryption
+vless.tls: enabled, serverName, utlsFingerprint
+vless.tls.reality: enabled, publicKey, shortId
+```
+
+固定协议字段为只读。`client.id/name` 只表示导出文件属于哪个 VPS 客户端，不参与
+mac-guard 运行配置。
 
 可以手工修改，也可以从 VPS 后台下载对应客户端的 `*.vps-config.json`，在“节点配置”
 页面选择“导入 VPS 配置”。导入文件中的 UUID、Reality 公钥和 short ID 不会出现在

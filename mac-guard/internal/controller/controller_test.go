@@ -334,7 +334,7 @@ func TestSafelyPausedStateKeepsFirewallProtection(t *testing.T) {
 	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
 	cfg.MaintenanceFile = maintenanceFile
 	controller := NewController(cfg, ipv6Runner{}, "test")
-	controller.apply(checkOutput{providerDisabled: true, components: []model.Component{
+	controller.apply(checkOutput{components: []model.Component{
 		{ID: "firewall", Name: "PF 实时阻断", Health: model.HealthHealthy, Required: true},
 		{ID: "provider", Name: "sing-box", Health: model.HealthFailed, Required: true},
 	}})
@@ -344,6 +344,28 @@ func TestSafelyPausedStateKeepsFirewallProtection(t *testing.T) {
 	}
 	if len(snapshot.Alerts) != 1 || snapshot.Alerts[0].ID != "safely_paused" {
 		t.Fatalf("alerts = %#v", snapshot.Alerts)
+	}
+}
+
+func TestSafelyPausedStateDoesNotDependOnLaunchdDisabledProbe(t *testing.T) {
+	directory := t.TempDir()
+	maintenanceFile := filepath.Join(directory, "safely-paused")
+	if err := os.WriteFile(maintenanceFile, []byte("paused\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testControllerConfig()
+	cfg.EventLogFile = filepath.Join(directory, "events.jsonl")
+	cfg.MaintenanceFile = maintenanceFile
+	controller := NewController(cfg, ipv6Runner{}, "test")
+	controller.apply(checkOutput{components: []model.Component{
+		{ID: "firewall", Health: model.HealthHealthy, Required: true},
+		{ID: "provider", Health: model.HealthFailed, Required: true},
+		{ID: "tunnel", Health: model.HealthFailed, Required: true},
+		{ID: "egress", Health: model.HealthFailed, Required: true},
+	}})
+	snapshot := controller.Snapshot()
+	if snapshot.State != model.StateMaintenance || !snapshot.Protected || snapshot.Connected {
+		t.Fatalf("state=%s protected=%t connected=%t", snapshot.State, snapshot.Protected, snapshot.Connected)
 	}
 }
 

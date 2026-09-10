@@ -137,7 +137,7 @@ func TestPausedStateStillRepairsFirewall(t *testing.T) {
 	started := make(chan context.Context, 1)
 	runner := &blockingActionRunner{command: "repair-firewall", started: started, release: make(chan struct{}), resultErr: errors.New("simulated repair failure")}
 	controller := NewController(cfg, runner, "test")
-	output := checkOutput{providerDisabled: true, components: []model.Component{
+	output := checkOutput{components: []model.Component{
 		{ID: "firewall", Health: model.HealthFailed, Required: true},
 		{ID: "provider", Health: model.HealthFailed, Required: true},
 		{ID: "tunnel", Health: model.HealthFailed, Required: true},

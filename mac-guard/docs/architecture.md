@@ -157,7 +157,31 @@ sing-box DNS 使用 `ipv4_only`，PF 阻断物理接口的公网 IPv6。Controll
 
 如果探针返回原生公网 IPv6，组件立即判定失败。
 
-## 8. 控制与状态流
+## 8. 分层连通性检查
+
+完整检查同时使用两个不同探针：
+
+```text
+物理 Endpoint 探针
+  Controller socket --IP_BOUND_IF--> en0 --> 149.104.78.121:443
+
+公网出口探针
+  Controller --> TUN --> sing-box --> 东京 VPS --> IP 检测服务
+```
+
+物理 Endpoint 探针故意绕过 TUN，因为它只回答当前物理网络是否能连接东京服务器。
+PF 本来就必须放行物理接口到唯一 VPS Endpoint，否则 sing-box 无法建立隧道。该例外
+不能访问其他公网目标，不构成业务旁路。
+
+两个探针组合后可以分层定位：
+
+| 物理 Endpoint | 公网出口 | 结论 |
+| --- | --- | --- |
+| 失败 | 失败 | 本地网络、PF Endpoint 白名单、VPS 或端口故障 |
+| 正常 | 失败 | TUN、sing-box、VLESS/Reality 或 VPS 出网故障 |
+| 正常 | 正常 | 完整东京链路正常 |
+
+## 9. 控制与状态流
 
 Go 二进制有两种运行方式：
 
@@ -192,7 +216,14 @@ TUN 不存在时才是 `maintenance`。标记存在但进程、TUN 或东京出�
 `inconsistent_locked`，产生严重告警并重新执行幂等暂停。即使处于 maintenance，PF
 完整性检查和自动修复仍继续运行。
 
-## 9. 冲突处理
+`maintenance` 判定不依赖 `launchctl print-disabled` 的辅助查询结果。暂停检查期间公网
+与 DNS 探针预期超时，不能因为检查上下文耗尽而把已经停止的隧道误判为仍在运行。
+
+暂停状态使用独立快检，不等待正常联网成功：公网请求必须快速失败，系统 DNS 必须仍为
+`172.19.0.2`，IPv6 必须不可用，PF 必须保持启用。确认进入 maintenance 后，已停止的
+sing-box、launchd 和 TUN 在展示层标记为“已按计划停止”，而不是运行故障。
+
+## 10. 冲突处理
 
 Controller 每 10 秒执行完整检查，每 2 秒巡检代理/VPN 冲突。冲突包括：
 
@@ -205,7 +236,7 @@ PF 是零等待的第一道边界。轮询用于发现、记录和恢复，不�
 已知代理会被关闭；未知系统 VPN 不会被盲目杀死，以免切断 SSH 或企业管理通道，
 但其公网连接仍受 PF 阻断，后台保持故障锁定并告警。
 
-## 10. AppleScript 边界
+## 11. AppleScript 边界
 
 AppleScript 仅用于：
 
@@ -215,7 +246,7 @@ AppleScript 仅用于：
 AppleScript 不参与路由、DNS、PF、进程观测、保活或故障状态判断。App 拒绝退出时
 只记录警告，不强杀；PF 仍负责阻断公网。
 
-## 11. 信任边界
+## 12. 信任边界
 
 - 获得 root 权限的软件可以修改 PF、停止 Controller 或替换二进制，本系统不对抗同级
   root 攻击者。
@@ -224,7 +255,7 @@ AppleScript 不参与路由、DNS、PF、进程观测、保活或故障状态判
 - `protected=true` 表示 PF 防回落生效；`connected=true` 表示完整东京链路可用。
   两者必须分开理解。
 
-## 12. 节点配置持久化
+## 13. 节点配置持久化
 
 节点配置不使用数据库，以下两个 JSON 是唯一数据源：
 
@@ -241,7 +272,19 @@ VPS 后台导出的 `lightnode.vps-config` v1 可以直接导入。导入只接�
 Reality、`xtls-rprx-vision` 和完整客户端凭据。导入、手工修改和恢复前都会创建
 root-only 备份；后台只返回备份时间、原因与 Endpoint，不返回原始 JSON 或凭据。
 
-## 13. 配置与日志生命周期
+后台编辑结构与导入 JSON 对齐：
+
+```text
+endpoint
+vless
+  tls
+    reality
+```
+
+固定协议字段只读，secret 只返回“已配置”状态。`client.id/name` 是导出来源元数据，
+不写入 sing-box 运行配置。
+
+## 14. 配置与日志生命周期
 
 配置备份位于 `/Library/Application Support/LightNodeController/backups`，权限为
 `0700/0600`，默认保留 10 份。Controller、sing-box、PF 引导和事件日志超过 5 MiB

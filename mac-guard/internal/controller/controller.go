@@ -353,7 +353,7 @@ func (c *Controller) apply(output checkOutput) {
 		}
 	}
 	paused := c.safelyPaused()
-	pausedRuntimeActive := paused && (!output.providerDisabled || isHealthy(byID["provider"]) || isHealthy(byID["tunnel"]) || isHealthy(byID["egress"]))
+	pausedRuntimeActive := paused && (isHealthy(byID["provider"]) || isHealthy(byID["tunnel"]) || output.observedIP != "")
 	state := model.StateHealthy
 	switch {
 	case !protected:
@@ -368,6 +368,12 @@ func (c *Controller) apply(output checkOutput) {
 		state = model.StateDegradedLocked
 	case protected && connected:
 		state = model.StateHealthy
+	}
+	if state == model.StateMaintenance {
+		for index := range output.components {
+			normalizePausedComponent(&output.components[index])
+			byID[output.components[index].ID] = output.components[index]
+		}
 	}
 	stages := buildStages(byID)
 	alerts := buildAlerts(byID, state, now)
@@ -436,6 +442,23 @@ func (c *Controller) apply(output checkOutput) {
 	c.snapshot.Alerts = alerts
 	c.snapshot.Events = append([]model.Event(nil), c.events...)
 	c.snapshot.RuntimeConfig = runtimeConfig
+}
+
+func normalizePausedComponent(component *model.Component) {
+	switch component.ID {
+	case "provider":
+		component.Health = model.HealthHealthy
+		component.Summary = "东京线路已按计划停止"
+		component.Detail = "safely paused"
+	case "provider_service":
+		component.Health = model.HealthHealthy
+		component.Summary = "线路守护服务已按计划暂停"
+		component.Detail = "safely paused"
+	case "tunnel":
+		component.Health = model.HealthHealthy
+		component.Summary = "TUN 已按计划停止"
+		component.Detail = "safely paused"
+	}
 }
 
 func expectedPausedComponent(id string) bool {

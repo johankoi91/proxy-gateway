@@ -21,7 +21,6 @@ type checkOutput struct {
 	observedIP       string
 	physicalIF       string
 	tunnelIF         string
-	providerDisabled bool
 }
 
 type checker struct {
@@ -59,9 +58,20 @@ func (c *checker) run(ctx context.Context) checkOutput {
 		c.checkLaunchd(ctx, now),
 	}
 	vpsComponent, vpsTest := c.checkVPS(ctx, now, physicalIF)
-	egressComponent, egressTest, observedIP := c.checkEgress(ctx, now)
-	dnsComponent, dnsTest := c.checkDNS(ctx, now)
-	ipv6Component, ipv6Test := c.checkIPv6(ctx, now)
+	var egressComponent, dnsComponent, ipv6Component model.Component
+	var egressTest, dnsTest, ipv6Test model.TestResult
+	var observedIP string
+	if c.maintenanceActive() {
+		egressComponent, egressTest, observedIP = c.checkPausedEgress(ctx, now)
+		dnsComponent, dnsTest = c.checkPausedDNS(ctx, now)
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		ipv6Component, ipv6Test = c.checkIPv6(probeCtx, now)
+		cancel()
+	} else {
+		egressComponent, egressTest, observedIP = c.checkEgress(ctx, now)
+		dnsComponent, dnsTest = c.checkDNS(ctx, now)
+		ipv6Component, ipv6Test = c.checkIPv6(ctx, now)
+	}
 	components = append(components, vpsComponent, egressComponent, dnsComponent, ipv6Component)
 	return checkOutput{
 		components:       components,
@@ -69,20 +79,48 @@ func (c *checker) run(ctx context.Context) checkOutput {
 		observedIP:       observedIP,
 		physicalIF:       physicalIF,
 		tunnelIF:         tunnelInterface(components),
-		providerDisabled: c.providerLaunchdDisabled(ctx),
 	}
 }
 
-func (c *checker) providerLaunchdDisabled(ctx context.Context) bool {
-	if c.cfg.ProviderLaunchDaemonLabel == "" {
+func (c *checker) maintenanceActive() bool {
+	if c.cfg.MaintenanceFile == "" {
 		return false
 	}
-	output, err := c.runner.Run(ctx, "launchctl", "print-disabled", "system")
+	_, err := os.Stat(c.cfg.MaintenanceFile)
+	return err == nil
+}
+
+func (c *checker) checkPausedEgress(ctx context.Context, now time.Time) (model.Component, model.TestResult, string) {
+	started := time.Now()
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, c.cfg.EgressProbeURL, nil)
+	resp, err := c.client.Do(req)
 	if err != nil {
-		return false
+		comp := component("egress", "公网出口", model.HealthHealthy, true, "安全暂停期间公网访问已阻断", "blocked", now, started)
+		return comp, test("egress", "公网阻断", model.HealthHealthy, "blocked", "blocked", "未发现本地公网回落", now, started), ""
 	}
-	expected := `"` + c.cfg.ProviderLaunchDaemonLabel + `" => disabled`
-	return strings.Contains(string(output), expected)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
+	actual := strings.TrimSpace(string(body))
+	comp := component("egress", "公网出口", model.HealthFailed, true, "安全暂停期间仍可访问公网", actual, now, started)
+	return comp, test("egress", "公网阻断", model.HealthFailed, "blocked", actual, "检测到安全暂停期间的公网访问", now, started), actual
+}
+
+func (c *checker) checkPausedDNS(ctx context.Context, now time.Time) (model.Component, model.TestResult) {
+	started := time.Now()
+	out, err := c.runner.Run(ctx, "scutil", "--dns")
+	expected := strings.Join(c.cfg.ExpectedDNSServers, ", ")
+	if err != nil {
+		comp := component("dns", "隧道 DNS", model.HealthFailed, true, "无法确认暂停期间的 DNS 设置", err.Error(), now, started)
+		return comp, test("dns", "DNS 防回落", model.HealthFailed, expected, "unknown", err.Error(), now, started)
+	}
+	if !defaultDNSUses(string(out), c.cfg.ExpectedDNSServers) {
+		comp := component("dns", "隧道 DNS", model.HealthFailed, true, "DNS 已偏离隧道地址", expected, now, started)
+		return comp, test("dns", "DNS 防回落", model.HealthFailed, expected, "changed", "检测到本地 DNS 回落风险", now, started)
+	}
+	comp := component("dns", "隧道 DNS", model.HealthHealthy, true, "安全暂停期间 DNS 未回落", expected, now, started)
+	return comp, test("dns", "DNS 防回落", model.HealthHealthy, expected, expected, "DNS 仍固定为隧道地址", now, started)
 }
 
 func (c *checker) checkPFBootstrapLaunchd(ctx context.Context, now time.Time) model.Component {

@@ -168,6 +168,22 @@ alerts=[]
 标记与真实运行态冲突时必须是 `inconsistent_locked`，并存在
 `lifecycle_inconsistent` 告警；不能显示为 maintenance。
 
+maintenance 下执行“运行检查”应在约 4 秒完成快速防回落验证：
+
+```text
+state=maintenance
+protected=true
+connected=false
+observedEgress=""
+公网访问=blocked
+DNS=172.19.0.2
+IPv6=unavailable
+异常组件=0
+```
+
+暂停检查不得等待正常公网、DNS 或 IPv6 请求成功，也不得依赖
+`launchctl print-disabled` 的辅助结果判断隧道是否仍活跃。
+
 ### 6.3 六阶段与组件完整性
 
 阶段顺序必须是：
@@ -195,7 +211,9 @@ transport
 egress
 ```
 
-正常运行时 14 个组件均为 `healthy`。四项主动测试为：
+正常运行和确认完成的安全暂停状态下，14 个组件均应为 `healthy`。maintenance 中的
+provider、provider_service 和 tunnel 表示“已按计划停止”，不代表进程正在运行。
+四项主动测试为：
 
 ```text
 vps_tcp
@@ -217,7 +235,8 @@ sudo launchctl print system/com.lightnode.controller
 正常条件：
 
 - `com.lightnode.controller` 为 `running`，只有一个 PID。
-- `com.lightnode.sing-box` 为 `running`，只有一个 PID。
+- healthy 状态下 `com.lightnode.sing-box` 为 `running`，只有一个 PID；maintenance
+  状态下它应被 disable/bootout，且不存在 sing-box 进程。
 - `com.lightnode.pf-bootstrap` 是一次性任务，可以是 `not running`，但最后退出码必须为
   `0`。
 - launchd plist 均通过 `plutil -lint`。
@@ -263,7 +282,8 @@ route -n get 8.8.8.8
 route -n get 149.104.78.121
 ```
 
-普通公网路由应指向 `utunN`。但仅看路由表不能判断 sing-box 的 Endpoint socket，必须
+healthy 状态下普通公网路由应指向 `utunN`。maintenance 状态下 TUN 不存在、普通公网
+访问被 PF 阻断。仅看路由表不能判断 sing-box 的 Endpoint socket，必须
 继续检查：
 
 ```bash
@@ -394,6 +414,9 @@ SPICE 创建但处于 `Disconnected` 的 PPP/Modem 服务不视为 VPN 冲突。
 - 用户目录在进程路径中被脱敏。
 - 活动连接上限为 200，后台最多展示 100 条。
 
+maintenance 状态允许 `connections.activeConnections` 为 `null` 或空数组；前端必须
+规范化为空数组并正常渲染，不得白屏。该状态不要求 Clash API `9090` 可连接。
+
 连接观察不是数据包捕获，不应出现 HTTP 正文、Cookie、Token 或消息内容。
 
 ### 6.12 管理后台
@@ -404,14 +427,23 @@ SPICE 创建但处于 `Disconnected` 的 PPP/Modem 服务不视为 VPN 冲突。
 - 远端查看通过 SSH 转发，不开放局域网或公网管理端口。
 - 页面只有总览、系统检查、节点配置和事件记录四个标签。
 - 总览包含实时连接，不存在独立连接观察标签。
+- 顶部不存在重复的刷新图标；总览自动刷新，系统检查页保留“刷新状态”。
 - 系统检查只有六个阶段，VPS 传输和固定出口合并展示。
 - 健康阶段默认收起，异常阶段自动展开。
 - 系统检查不定时请求 `/api/snapshot`。
 - 页面内“刷新状态”每次只读取一次 Snapshot。
 - “运行检查”执行 `/api/tests/run`。
+- 运行检查、安全暂停、启动保护和重启线路显示全屏任务层，执行期间阻止重复操作；
+  生命周期阶段来自持久化 Action，刷新页面后可恢复。
+- maintenance 下运行检查显示暂停专用步骤，并在约 4 秒内解除任务层。
 - 配置详情按需展开，不重复组件健康状态。
+- PF 健康项不重复显示 Anchor、文件路径和 launchd Label；DNS 不展示测试域名 CDN IP。
+- 节点配置按 `endpoint -> vless -> tls -> reality` JSON 层级排列，固定字段只读，secret
+  只显示配置状态。
+- 事件页默认最多显示最近 40 条中文重要记录，可切换完整技术记录。
 - 后台只提供桌面布局，最小宽度 `1100px`，没有移动端媒体查询。
-- 页面中不得出现 UUID、Reality 参数、API Secret 或密码。
+- 页面不得回显现有 UUID、Reality secret、API Secret 或密码；节点配置可以显示字段名
+  和“已配置”状态，用户主动输入的新值使用 password 控件。
 - 生命周期 POST 必须返回 `202 + actionId`，Action 不继承 HTTP 请求取消。
 - `GET /api/actions/{id}` 能查询持久化状态；同时只能运行一个网络变更操作。
 - 关闭页面后 Action 继续执行，Controller 重启后继续未完成 Action。
@@ -423,8 +455,11 @@ SPICE 创建但处于 `Disconnected` 的 PPP/Modem 服务不视为 VPN 冲突。
 收起态滚动无超过 200ms Long Task
 静置系统检查 10.5 秒无 /api/snapshot 请求
 点击刷新状态恰好产生 1 次 /api/snapshot 请求
+运行检查期间任务层可见，完成后自动解除
+maintenance Snapshot 含 null activeConnections 时页面不白屏
 展开全部阶段后 14 个组件完整
 展开配置后 6 个运行组件及启动命令完整
+节点配置 JSON 层级与 lightnode.vps-config v1 一致
 ```
 
 ### 6.13 文件权限与安装内容
@@ -480,17 +515,17 @@ iostat -d -w 1 -c 3
 - Swap、压缩内存、Pageout 和磁盘持续 I/O。
 - 后台系统检查页收起前后的 Renderer 占用。
 
-当前参考配置：4 vCPU、8 GiB 内存、固定 `1600x900 @ 80 PPI`、关闭 UTM 动态
-分辨率。
+当前参考配置：4 vCPU、8 GiB 内存、`1920x1200 @ 80 PPI`。UTM 当前启用动态分辨率；
+走查应核对实际配置与交付基线一致，不应继续套用旧的 `1600x900` 固定分辨率。
 
 ### 6.16 UTM 显示与剪贴板
 
 宿主 UTM 配置必须满足：
 
 ```text
-DynamicResolution=false
-WidthPixels=1600
-HeightPixels=900
+DynamicResolution=true
+WidthPixels=1920
+HeightPixels=1200
 PixelsPerInch=80
 ClipboardSharing=true
 ```
@@ -544,6 +579,9 @@ lsof -U | grep spice-vdagent
 maintenance 状态仍必须修复 PF。暂停标记与活跃 sing-box/TUN 冲突时，必须进入
 `inconsistent_locked` 并自动重新执行暂停。
 
+maintenance 快检还必须覆盖：公网被阻断、DNS 保持 `172.19.0.2`、IPv6 不可用，
+并确认检查不会因预期网络超时而卡住或循环执行暂停任务。
+
 最后一项当前尚未实现。走查必须读取历史事件，确认是否出现长时间
 `degraded_locked` 且没有恢复动作。
 
@@ -595,7 +633,7 @@ maintenance 状态仍必须修复 PF。暂停标记与活跃 sing-box/TUN 冲突
 
 ## 10. 本次基线结果
 
-基线日期：2026-09-07。
+基线日期：2026-09-10。
 
 ```text
 版本：0.2.0-alpha.32
@@ -612,9 +650,14 @@ PF：Enabled，IPv4/IPv6 最终阻断规则存在
 DNS：172.19.0.2
 物理 IPv6：Off
 唯一出站：tokyo
-Clipboard：双向真实复制通过
-显示：1600x900，Dynamic Resolution 关闭
+Clipboard：重启 Guest 后双向真实复制通过
+显示：1920x1200，Dynamic Resolution 开启
+安全暂停：maintenance / protected=true / connected=false
+暂停快检：约 4 秒，异常组件 0，任务层自动解除
+后台：健康与暂停状态均可渲染，null 集合不白屏
+节点配置：与 lightnode.vps-config v1 JSON 层级一致
 ```
 
-本次未执行破坏性故障注入。`AUDIT-002` 已通过 Darwin `IP_BOUND_IF` 物理接口探针
-解决；仍需持续报告 `AUDIT-001` 和 `AUDIT-003`，直到对应代码与验收测试完成。
+本次验证包含真实 VM 重启、正常启动、安全暂停、暂停快检和重新启动保护；未执行破坏性
+VPS/DNS/PF 故障注入。`AUDIT-002` 已通过 Darwin `IP_BOUND_IF` 物理接口探针解决；
+仍需持续报告 `AUDIT-001` 和 `AUDIT-003`，直到对应代码与验收测试完成。
