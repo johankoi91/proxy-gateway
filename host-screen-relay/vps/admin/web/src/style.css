@@ -1,0 +1,51 @@
+:root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #18201b; background: #f4f6f4; font-size: 17px; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+button { display: inline-flex; align-items: center; gap: 8px; border: 0; border-radius: 6px; background: #176b42; color: white; font-weight: 600; padding: 10px 16px; cursor: pointer; }
+button:hover { background: #115534; }
+button:disabled { opacity: .55; cursor: wait; }
+main { width: min(1120px, calc(100% - 64px)); margin: 48px auto; }
+header, .toolbar, .status-bar, .status-item, .host-delivery, .delivery-actions, .modal-title, .modal-actions { display: flex; align-items: center; }
+header, .toolbar, .modal-title { justify-content: space-between; }
+h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: 0; }
+h2 { font-size: 20px; letter-spacing: 0; }
+p { margin: 0; color: #68716b; }
+.icon-button { width: 42px; height: 42px; justify-content: center; padding: 0; background: transparent; color: #39443d; border: 1px solid #ccd2ce; }
+.icon-button:hover { background: #e7ebe8; }
+.status-bar { gap: 42px; margin: 34px 0; padding: 17px 20px; border: 1px solid #d7dcd8; background: white; }
+.status-item { gap: 10px; }
+.status-item span:last-child { color: #68716b; }
+.host-delivery { justify-content: space-between; gap: 30px; margin-bottom: 32px; padding: 20px; background: #fff; border-left: 3px solid #176b42; }
+.host-delivery h2 { margin: 0 0 6px; }
+.delivery-note { margin-top: 5px; font-size: 14px; color: #8a4b19; }
+.delivery-actions { gap: 14px; white-space: nowrap; }
+.button-link { display: inline-flex; align-items: center; gap: 7px; border-radius: 6px; padding: 10px 14px; background: #176b42; color: white; font-weight: 600; text-decoration: none; }
+.button-link:hover { background: #115534; }
+.text-link { color: #176b42; font-weight: 600; text-decoration: none; }
+.disabled { pointer-events: none; opacity: .45; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #a4aaa6; }
+.dot.ok { background: #159455; }
+.dot.bad { background: #c93d35; }
+.message { min-height: 28px; color: #b42c25; }
+table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #d7dcd8; }
+th, td { text-align: left; padding: 15px 17px; border-bottom: 1px solid #e1e5e2; }
+th { color: #58615b; font-size: 14px; background: #fafbfa; }
+.actions { text-align: right; white-space: nowrap; }
+.actions a, .actions button { margin-left: 8px; }
+.actions a { display: inline-flex; align-items: center; gap: 6px; color: #176b42; font-weight: 600; text-decoration: none; padding: 7px; }
+.danger { background: transparent; color: #b42c25; padding: 7px; }
+.danger:hover { background: #fff0ef; }
+.empty { text-align: center; color: #747c77; padding: 36px; }
+code { font-size: 15px; }
+.modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: #10161299; }
+.modal { width: 420px; border-radius: 8px; padding: 26px; background: white; box-shadow: 0 20px 70px #0004; }
+.modal h2 { margin: 0; }
+.modal-title { margin-bottom: 24px; }
+label { display: block; margin-bottom: 8px; font-weight: 600; }
+input { width: 100%; padding: 12px; border: 1px solid #b9c0bb; border-radius: 5px; }
+.modal-actions { justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.secondary { background: #e6e9e7; color: #273029; }
+.secondary:hover { background: #d9ddda; }
+.spinning { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

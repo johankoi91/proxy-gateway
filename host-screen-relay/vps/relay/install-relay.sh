@@ -20,21 +20,21 @@ for command in wg wg-quick iptables flock; do
   command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 1; }
 done
 
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+relay_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 install -d -m 0700 /etc/wireguard /etc/wireguard/clients /etc/wireguard/revoked
 if [[ ! -f /etc/wireguard/server.key ]]; then
   umask 077
   wg genkey > /etc/wireguard/server.key
 fi
 chmod 0600 /etc/wireguard/server.key
-install -m 0755 "$root/vps/lightnode-relay-rules" /usr/local/sbin/lightnode-relay-rules
-install -m 0755 "$root/vps/add-remote-peer.sh" /usr/local/sbin/lightnode-add-remote-peer
-install -m 0755 "$root/vps/remove-remote-peer.sh" /usr/local/sbin/lightnode-remove-remote-peer
+install -m 0755 "$relay_dir/lightnode-relay-rules" /usr/local/sbin/lightnode-relay-rules
+install -m 0755 "$relay_dir/add-remote-peer.sh" /usr/local/sbin/lightnode-add-remote-peer
+install -m 0755 "$relay_dir/remove-remote-peer.sh" /usr/local/sbin/lightnode-remove-remote-peer
 
 server_private_key="$(cat /etc/wireguard/server.key)"
 awk -v server_key="$server_private_key" -v host_key="$host_public_key" '
   { gsub("REPLACE_SERVER_PRIVATE_KEY", server_key); gsub("REPLACE_HOST_PUBLIC_KEY", host_key); print }
-' "$root/vps/wg0.conf.example" > /etc/wireguard/wg0.conf.new
+' "$relay_dir/wg0.conf.example" > /etc/wireguard/wg0.conf.new
 chmod 0600 /etc/wireguard/wg0.conf.new
 mv /etc/wireguard/wg0.conf.new /etc/wireguard/wg0.conf
 wg-quick strip wg0 >/dev/null

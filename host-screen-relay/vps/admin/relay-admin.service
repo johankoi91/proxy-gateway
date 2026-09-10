@@ -1,0 +1,17 @@
+[Unit]
+Description=LightNode Guangzhou Relay Admin
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/lightnode-relay-admin.env
+ExecStart=/usr/local/sbin/lightnode-relay-admin
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

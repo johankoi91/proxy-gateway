@@ -23,11 +23,12 @@ id "$HOST_USER" >/dev/null 2>&1 || { echo "unknown host user: $HOST_USER" >&2; e
 echo "$HOST_USER" | grep -Eq '^[A-Za-z0-9._-]+$' || { echo "invalid host user" >&2; exit 1; }
 echo "$GUEST_IP" | grep -Eq '^[0-9]+(\.[0-9]+){3}$' || { echo "invalid guest IP" >&2; exit 1; }
 
-for command in /opt/homebrew/bin/wg /opt/homebrew/bin/wg-quick /opt/homebrew/bin/wireguard-go; do
-  [ -x "$command" ] || { echo "missing $command; install wireguard-tools and wireguard-go with Homebrew" >&2; exit 1; }
+TOOLS_DIR="${LIGHTNODE_HOST_RELAY_TOOLS:-/usr/local/libexec/lightnode-host-relay/bin}"
+for command in "$TOOLS_DIR/wg" "$TOOLS_DIR/wg-quick" "$TOOLS_DIR/wireguard-go"; do
+  [ -x "$command" ] || { echo "missing packaged dependency: $command" >&2; exit 1; }
 done
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+ROOT="${LIGHTNODE_HOST_RELAY_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
 APP_DIR="/Library/Application Support/LightNodeHostRelay"
 LOG_DIR="/Library/Logs/LightNodeHostRelay"
 HOST_WG_ADDRESS="$(awk -F= '/^[[:space:]]*Address[[:space:]]*=/ { value=$2; gsub(/[[:space:]]/, "", value); sub(/\/.*/, "", value); print value; exit }' "$WG_SOURCE")"
