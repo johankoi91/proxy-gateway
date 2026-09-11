@@ -1,0 +1,32 @@
+desktop:
+  resolution:
+    width: 1440
+    height: 900
+  allow_resize: true
+  pixel_depth: 24
+
+network:
+  protocol: http
+  interface: 0.0.0.0
+  websocket_port: 8443
+  use_ipv4: true
+  use_ipv6: false
+  udp:
+    public_ip: 10.88.0.254
+    port: 8443
+    payload_size: 1200
+  ssl:
+    pem_certificate: /etc/ssl/certs/ssl-cert-snakeoil.pem
+    pem_key: /etc/ssl/private/ssl-cert-snakeoil.key
+    require_ssl: true
+
+encoding:
+  max_frame_rate: 45
+  rect_encoding_mode:
+    min_quality: 6
+    max_quality: 7
+    consider_lossless_quality: 9
+  scrolling:
+    detect_vertical_scrolling: true
+    detect_horizontal_scrolling: true
+    scroll_detect_threshold: 10%

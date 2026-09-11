@@ -1,0 +1,26 @@
+services:
+  chromium:
+    build: .
+    image: lightnode/kasmvnc-chromium:1.5.0
+    container_name: lightnode-kasmvnc-chromium
+    hostname: kasm-chromium
+    environment:
+      KASM_USER: admin
+      KASM_PASSWORD: admin1111
+      TZ: Asia/Tokyo
+    ports:
+      - "10.211.55.7:8443:8443/tcp"
+      - "10.211.55.7:8443:8443/udp"
+    volumes:
+      - chromium-home:/home/browser
+    shm_size: 1gb
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x Xvnc >/dev/null && ps -eo stat,comm | awk '$$2 == \"chromium\" && $$1 !~ /^Z/ { found=1 } END { exit !found }'"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  chromium-home:

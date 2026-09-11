@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+wg_interface="${2:-wg0}"
+host_peer="${HOST_PEER_ADDRESS:-10.88.0.2}"
+hairpin_address="${HAIRPIN_ADDRESS:-10.88.0.254}"
+browser_port="${BROWSER_PORT:-8443}"
+
+delete_all() {
+  local table="$1"
+  local chain="$2"
+  shift 2
+  while /usr/sbin/iptables -t "$table" -C "$chain" "$@" 2>/dev/null; do
+    /usr/sbin/iptables -t "$table" -D "$chain" "$@"
+  done
+}
+
+down() {
+  delete_all filter FORWARD -i "$wg_interface" -o "$wg_interface" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  delete_all filter FORWARD -i "$wg_interface" -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p tcp --dport "$browser_port" -m conntrack --ctorigdst "$hairpin_address" -j ACCEPT
+  delete_all filter FORWARD -i "$wg_interface" -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p udp --dport "$browser_port" -m conntrack --ctorigdst "$hairpin_address" -j ACCEPT
+  delete_all nat PREROUTING -i "$wg_interface" -s 10.88.0.0/24 -d "$hairpin_address" -p tcp --dport "$browser_port" -j DNAT --to-destination "$host_peer"
+  delete_all nat PREROUTING -i "$wg_interface" -s 10.88.0.0/24 -d "$hairpin_address" -p udp --dport "$browser_port" -j DNAT --to-destination "$host_peer"
+  delete_all nat POSTROUTING -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p tcp --dport "$browser_port" -j SNAT --to-source 10.88.0.1
+  delete_all nat POSTROUTING -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p udp --dport "$browser_port" -j SNAT --to-source 10.88.0.1
+}
+
+up() {
+  /usr/sbin/sysctl -w net.ipv4.ip_forward=1 >/dev/null
+  /usr/sbin/sysctl -w "net.ipv4.conf.${wg_interface}.rp_filter=0" >/dev/null
+
+  /usr/sbin/iptables -C FORWARD -i "$wg_interface" -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p udp --dport "$browser_port" -m conntrack --ctorigdst "$hairpin_address" -j ACCEPT 2>/dev/null || \
+    /usr/sbin/iptables -I FORWARD 1 -i "$wg_interface" -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p udp --dport "$browser_port" -m conntrack --ctorigdst "$hairpin_address" -j ACCEPT
+  /usr/sbin/iptables -C FORWARD -i "$wg_interface" -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p tcp --dport "$browser_port" -m conntrack --ctorigdst "$hairpin_address" -j ACCEPT 2>/dev/null || \
+    /usr/sbin/iptables -I FORWARD 1 -i "$wg_interface" -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p tcp --dport "$browser_port" -m conntrack --ctorigdst "$hairpin_address" -j ACCEPT
+  /usr/sbin/iptables -C FORWARD -i "$wg_interface" -o "$wg_interface" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    /usr/sbin/iptables -I FORWARD 1 -i "$wg_interface" -o "$wg_interface" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+  /usr/sbin/iptables -t nat -C PREROUTING -i "$wg_interface" -s 10.88.0.0/24 -d "$hairpin_address" -p tcp --dport "$browser_port" -j DNAT --to-destination "$host_peer" 2>/dev/null || \
+    /usr/sbin/iptables -t nat -I PREROUTING 1 -i "$wg_interface" -s 10.88.0.0/24 -d "$hairpin_address" -p tcp --dport "$browser_port" -j DNAT --to-destination "$host_peer"
+  /usr/sbin/iptables -t nat -C PREROUTING -i "$wg_interface" -s 10.88.0.0/24 -d "$hairpin_address" -p udp --dport "$browser_port" -j DNAT --to-destination "$host_peer" 2>/dev/null || \
+    /usr/sbin/iptables -t nat -I PREROUTING 1 -i "$wg_interface" -s 10.88.0.0/24 -d "$hairpin_address" -p udp --dport "$browser_port" -j DNAT --to-destination "$host_peer"
+  /usr/sbin/iptables -t nat -C POSTROUTING -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p tcp --dport "$browser_port" -j SNAT --to-source 10.88.0.1 2>/dev/null || \
+    /usr/sbin/iptables -t nat -I POSTROUTING 1 -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p tcp --dport "$browser_port" -j SNAT --to-source 10.88.0.1
+  /usr/sbin/iptables -t nat -C POSTROUTING -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p udp --dport "$browser_port" -j SNAT --to-source 10.88.0.1 2>/dev/null || \
+    /usr/sbin/iptables -t nat -I POSTROUTING 1 -o "$wg_interface" -s 10.88.0.0/24 -d "$host_peer" -p udp --dport "$browser_port" -j SNAT --to-source 10.88.0.1
+}
+
+case "$action" in
+  up) up ;;
+  down) down ;;
+  *) echo "usage: lightnode-browser-relay-rules up|down [wg-interface]" >&2; exit 2 ;;
+esac
