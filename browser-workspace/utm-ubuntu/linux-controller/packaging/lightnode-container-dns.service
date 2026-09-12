@@ -1,0 +1,8 @@
+[Unit]
+Description=LightNode container host status and DNS refresh
+After=docker.service network-online.target lightnode-lockdown.service
+Requires=docker.service lightnode-lockdown.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lightnode-linux-controller/lightnode-linux-controller host-refresh

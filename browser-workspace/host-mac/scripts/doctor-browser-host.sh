@@ -15,5 +15,8 @@ echo "OK PF browser rules"
 
 nc -G 2 -z "$GUEST_IP" 8443 >/dev/null 2>&1 || { echo "FAIL KasmVNC direct endpoint"; exit 1; }
 echo "OK KasmVNC direct endpoint"
+nc -G 2 -z "$GUEST_IP" 8444 >/dev/null 2>&1 || { echo "FAIL file portal direct endpoint"; exit 1; }
+echo "OK file portal direct endpoint"
 nc -G 5 -z 10.88.0.254 8443 >/dev/null 2>&1 || { echo "FAIL Guangzhou hairpin"; exit 1; }
+nc -G 5 -z 10.88.0.254 8444 >/dev/null 2>&1 || { echo "FAIL file portal hairpin"; exit 1; }
 echo "OK Guangzhou hairpin"

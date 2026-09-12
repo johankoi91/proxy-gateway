@@ -1,0 +1,14 @@
+[Unit]
+Description=LightNode Linux Controller boot Kill Switch
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lightnode-linux-controller/lightnode-linux-controller firewall-apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

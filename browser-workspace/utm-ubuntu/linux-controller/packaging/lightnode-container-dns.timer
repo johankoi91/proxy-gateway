@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically enforce LightNode tunnel DNS
+
+[Timer]
+OnBootSec=3s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Unit=lightnode-container-dns.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,51 @@
+services:
+  chromium:
+    build: .
+    image: lightnode/kasmvnc-chromium:1.5.0
+    container_name: lightnode-kasmvnc-chromium
+    hostname: kasm-chromium
+    environment:
+      KASM_USER: admin
+      KASM_PASSWORD: admin1111
+      TZ: Asia/Tokyo
+    ports:
+      - "10.211.55.7:8443:8443/tcp"
+    volumes:
+      - chromium-home:/home/browser
+    shm_size: 1gb
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x Xvnc >/dev/null && ps -eo stat,comm | awk '$$2 == \"chromium\" && $$1 !~ /^Z/ { found=1 } END { exit !found }'"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  file-portal:
+    build: ./fileportal
+    image: lightnode/filebrowser-quantum:1.5.6-stable
+    container_name: lightnode-file-portal
+    environment:
+      FILE_PORTAL_USERNAME: downloads
+      FILE_PORTAL_PASSWORD: admin1111
+    ports:
+      - "10.211.55.7:8444:8444/tcp"
+    volumes:
+      - chromium-home:/srv:ro
+      - file-portal-data:/database
+      - ./fileportal/certs:/certs:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      chromium:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  chromium-home:
+  file-portal-data:

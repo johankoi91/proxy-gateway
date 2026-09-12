@@ -1,0 +1,29 @@
+{
+  "schema": "lightnode.vps-config",
+  "version": 1,
+  "client": {
+    "id": "example-only",
+    "name": "linux-example"
+  },
+  "endpoint": {
+    "address": "149.104.78.121",
+    "port": 443,
+    "expectedEgress": "149.104.78.121"
+  },
+  "vless": {
+    "uuid": "7f9527a5-5967-449d-aa1f-7c5960eb35a1",
+    "flow": "xtls-rprx-vision",
+    "transport": "tcp",
+    "encryption": "none",
+    "tls": {
+      "enabled": true,
+      "serverName": "www.cloudflare.com",
+      "utlsFingerprint": "chrome",
+      "reality": {
+        "enabled": true,
+        "publicKey": "VEnbXRyOqO98TYo4khJlxFSy0oPzTJsuepq2BNs4oiY",
+        "shortId": "0123456789abcdef"
+      }
+    }
+  }
+}

@@ -1,0 +1,74 @@
+server:
+  listen: "0.0.0.0"
+  port: 8444
+  baseURL: "/"
+  tlsCert: "/certs/cert.pem"
+  tlsKey: "/certs/key.pem"
+  database: "/database/filebrowser.db"
+  cacheDir: "/database/cache"
+  disableUpdateCheck: true
+  disablePreviews: true
+  disablePreviewResize: true
+  disableWebDAV: true
+  logging:
+    - levels: "info|warning|error"
+      output: "stdout"
+      noColors: true
+  sources:
+    - path: "/srv/Downloads"
+      name: "Downloads"
+      config:
+        private: true
+        readOnly: true
+        defaultEnabled: true
+        defaultUserScope: "/"
+
+auth:
+  tokenExpirationHours: 2
+  methods:
+    password:
+      enabled: true
+      # Quantum bootstraps an internal 5-character default before the CLI user.
+      # entrypoint.sh independently enforces 8 characters for the real account.
+      minLength: 5
+      signup: false
+    passkey:
+      enabled: false
+
+frontend:
+  name: "Remote Downloads"
+  description: "Read-only downloads"
+  disableDefaultLinks: true
+  disableUsedPercentage: true
+  disableNavButtons: true
+  disablePWAInstall: true
+
+userDefaults:
+  sidebar:
+    hideFileActions: true
+    showTools: false
+  listing:
+    quickDownload: true
+    viewMode: "list"
+  preview:
+    image: false
+    video: false
+    audio: false
+    motionVideoPreview: false
+    office: false
+    popup: false
+    folder: false
+    models: false
+  account:
+    permissions:
+      api: false
+      admin: false
+      modify: false
+      share: false
+      realtime: false
+      delete: false
+      create: false
+      download: true
+    lockPassword: true
+    disableSettings: true
+    disableUpdateNotifications: true

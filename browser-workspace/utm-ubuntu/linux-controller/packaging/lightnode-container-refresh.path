@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for LightNode dashboard check requests
+
+[Path]
+PathExists=/run/lightnode-linux-controller/refresh-request
+Unit=lightnode-container-dns.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+.git
+docs
+testdata
+scripts
+dist/offline
+*.md
