@@ -102,8 +102,6 @@ IPv4/IPv6 出口。TUN 放行使用 `no state`，避免 PF 与用户态 TUN 的�
   数据流、PF/IPv6 和冲突处理。
 - [`docs/operations.md`](docs/operations.md)：安装升级、控制命令、安全暂停、故障
   行为、检查与卸载。
-- [`docs/dashboard.md`](docs/dashboard.md)：后台状态、组件数据来源、连接观察、告警、
-  API 和操作边界。
 - [`docs/runtime-audit-standard.md`](docs/runtime-audit-standard.md)：安装、升级、重启和
   日常运行后的标准走查项、通过条件、严重级别及已知缺口。
 

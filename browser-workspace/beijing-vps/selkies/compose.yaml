@@ -1,0 +1,57 @@
+services:
+  desktop:
+    build: .
+    image: lightnode/selkies-chromium:2.0.0rc0-amd64
+    container_name: beijing-selkies-chromium
+    hostname: beijing-selkies-chromium
+    environment:
+      TZ: Asia/Tokyo
+      LANG: zh_CN.UTF-8
+      LC_ALL: zh_CN.UTF-8
+      LANGUAGE: zh_CN:zh
+      PASSWD: ${SELKIES_PASSWORD:?SELKIES_PASSWORD is required}
+      SELKIES_BASIC_AUTH_USER: ${SELKIES_USER:-admin}
+      SELKIES_BASIC_AUTH_PASSWORD: ${SELKIES_PASSWORD:?SELKIES_PASSWORD is required}
+      SELKIES_ENABLE_BASIC_AUTH: "true"
+      SELKIES_ENABLE_HTTPS: "true"
+      SELKIES_PORT: "8445"
+      SELKIES_MODE: webrtc
+      SELKIES_ENABLE_DUAL_MODE: "false"
+      SELKIES_WEBRTC_PUBLIC_IP: ${SELKIES_PUBLIC_IP:-154.8.225.152}
+      SELKIES_WEBRTC_UDP_MUX_PORT: "59000"
+      SELKIES_WEBRTC_TCP_MUX_PORT: "59000"
+      SELKIES_WEBRTC_ICE_LITE: "true"
+      SELKIES_ENCODER: h264enc
+      SELKIES_FRAMERATE: 30-30
+      SELKIES_RATE_CONTROL_MODE: cbr
+      SELKIES_VIDEO_BITRATE: 12000-12000
+      SELKIES_VIDEO_MAX_QP: "32"
+      SELKIES_KEYFRAME_INTERVAL: "1.5"
+      SELKIES_ENABLE_RESIZE: "true"
+      SELKIES_MANUAL_RESOLUTION: "false"
+      SELKIES_USE_CSS_SCALING: "false"
+      SELKIES_ENABLE_CLIPBOARD: "true"
+      SELKIES_FILE_TRANSFERS: upload,download
+      SELKIES_UI_TITLE: Beijing Browser (Selkies)
+    ports:
+      - "${SELKIES_BIND_IP:-10.2.0.12}:8445:8445/tcp"
+      - "${SELKIES_BIND_IP:-10.2.0.12}:59000:59000/udp"
+      - "${SELKIES_BIND_IP:-10.2.0.12}:59000:59000/tcp"
+    volumes:
+      - selkies-home:/home/ubuntu
+    shm_size: 2gb
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -kfsS --max-time 3 -u \"$${SELKIES_BASIC_AUTH_USER}:$${SELKIES_BASIC_AUTH_PASSWORD}\" https://127.0.0.1:8445/ >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 45s
+
+volumes:
+  selkies-home:

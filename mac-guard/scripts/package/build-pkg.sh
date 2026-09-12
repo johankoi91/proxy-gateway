@@ -76,7 +76,6 @@ install -m 0644 "$ROOT/packaging/com.lightnode.pf-bootstrap.plist" "$PAYLOAD/Lib
 install -m 0644 "$ROOT/README.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/README.md"
 install -m 0644 "$ROOT/docs/architecture.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/ARCHITECTURE.md"
 install -m 0644 "$ROOT/docs/operations.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/OPERATIONS.md"
-install -m 0644 "$ROOT/docs/dashboard.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/DASHBOARD.md"
 install -m 0644 "$ROOT/docs/runtime-audit-standard.md" "$PAYLOAD/usr/local/share/doc/lightnode-controller/RUNTIME-AUDIT-STANDARD.md"
 install -m 0644 "$SING_BOX_LICENSE" "$PAYLOAD/usr/local/share/doc/lightnode-controller/SING_BOX_LICENSE"
 install -m 0644 "$ROOT/SING_BOX_VERSION" "$PAYLOAD/usr/local/share/doc/lightnode-controller/SING_BOX_VERSION"

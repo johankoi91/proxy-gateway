@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Google Chrome
+Exec=/usr/bin/google-chrome-stable --no-first-run --no-default-browser-check --disable-quic --lang=zh-CN --accept-lang=zh-CN,zh,en-US,en --start-maximized
+OnlyShowIn=LXQt;
+X-LXQt-Need-Tray=true

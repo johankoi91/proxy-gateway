@@ -1,0 +1,3 @@
+dist/offline/*.tar.gz
+dist/offline/*.tar.gz.sha256
+selkies/.env

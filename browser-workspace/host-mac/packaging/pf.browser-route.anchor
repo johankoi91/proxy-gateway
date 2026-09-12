@@ -1,8 +1,0 @@
-workspace_tcp = "{ 8443, 8444 }"
-
-nat on bridge100 inet proto tcp from 10.88.0.0/24 to 10.211.55.7 port $workspace_tcp -> 10.211.55.1
-
-rdr on lightnode-wg inet proto tcp from 10.88.0.0/24 to 10.88.0.2 port $workspace_tcp -> 10.211.55.7
-
-pass in quick on lightnode-wg inet proto tcp from 10.88.0.0/24 to 10.211.55.7 port $workspace_tcp flags S/SA keep state
-block drop in quick on lightnode-wg inet from 10.88.0.0/24 to 10.211.55.0/24
