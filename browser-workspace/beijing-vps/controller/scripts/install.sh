@@ -21,7 +21,7 @@ done
 [ "$(uname -m)" = "x86_64" ] || { echo "this package targets Linux AMD64" >&2; exit 1; }
 
 root_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-for command in /usr/sbin/nft /usr/bin/curl /usr/bin/resolvectl /usr/bin/systemctl; do
+for command in /usr/sbin/nft /usr/bin/curl /usr/bin/openssl /usr/bin/resolvectl /usr/bin/systemctl; do
   [ -x "$command" ] || { echo "missing dependency: $command" >&2; exit 1; }
 done
 if [ ! -x /usr/sbin/chronyd ]; then
@@ -50,6 +50,25 @@ fi
 
 /usr/local/libexec/lightnode-linux-controller/lightnode-linux-controller provision \
   --vps-config "$vps_config" --output /etc/lightnode-linux-controller --public-browser
+if [ ! -s /etc/lightnode-linux-controller/controller.crt ] || [ ! -s /etc/lightnode-linux-controller/controller.key ]; then
+  /usr/bin/openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 825 \
+    -subj "/CN=LightNode Controller" \
+    -keyout /etc/lightnode-linux-controller/controller.key \
+    -out /etc/lightnode-linux-controller/controller.crt
+fi
+chmod 0600 /etc/lightnode-linux-controller/controller.key
+chmod 0644 /etc/lightnode-linux-controller/controller.crt
+if [ ! -s "$root_dir/.env" ]; then
+  controller_password="$(/usr/bin/openssl rand -hex 20)"
+  umask 077
+  printf '%s\n' \
+    'CONTROLLER_USER=admin' \
+    "CONTROLLER_PASSWORD=$controller_password" \
+    'CONTROLLER_TLS_CERT=/etc/lightnode-linux-controller/controller.crt' \
+    'CONTROLLER_TLS_KEY=/etc/lightnode-linux-controller/controller.key' \
+    > "$root_dir/.env"
+fi
+chmod 0600 "$root_dir/.env"
 /usr/bin/systemctl daemon-reload
 
 cd "$root_dir"

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -106,9 +107,34 @@ func main() {
 
 func serveContainer(ctx context.Context, runtime *system.ContainerRuntime) error {
 	snapshot := runtime.Snapshot()
-	server := &http.Server{Addr: snapshot.Configuration.DashboardAddress + ":9180", Handler: httpapi.New(runtime), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	address := snapshot.Configuration.DashboardAddress
+	username := os.Getenv("LIGHTNODE_CONTROLLER_ADMIN_USER")
+	password := os.Getenv("LIGHTNODE_CONTROLLER_ADMIN_PASSWORD")
+	certificate := os.Getenv("LIGHTNODE_CONTROLLER_TLS_CERT")
+	privateKey := os.Getenv("LIGHTNODE_CONTROLLER_TLS_KEY")
+	public := ipIsPublicListener(address)
+	if public && (username == "" || password == "") {
+		return errors.New("public dashboard requires basic authentication credentials")
+	}
+	if public && (certificate == "" || privateKey == "") {
+		return errors.New("public dashboard requires a TLS certificate and private key")
+	}
+	handler := httpapi.New(runtime)
+	if username != "" || password != "" {
+		if username == "" || password == "" {
+			return errors.New("both dashboard username and password are required")
+		}
+		handler = httpapi.WithBasicAuth(handler, username, password)
+	}
+	server := &http.Server{Addr: address + ":9180", Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	done := make(chan error, 1)
-	go func() { done <- server.ListenAndServe() }()
+	go func() {
+		if certificate != "" || privateKey != "" {
+			done <- server.ListenAndServeTLS(certificate, privateKey)
+			return
+		}
+		done <- server.ListenAndServe()
+	}()
 	select {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -120,6 +146,11 @@ func serveContainer(ctx context.Context, runtime *system.ContainerRuntime) error
 		}
 		return err
 	}
+}
+
+func ipIsPublicListener(address string) bool {
+	ip := net.ParseIP(address)
+	return ip == nil || !ip.IsLoopback()
 }
 
 func usage() {

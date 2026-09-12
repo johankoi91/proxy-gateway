@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"io/fs"
@@ -59,6 +60,20 @@ func New(runtime *system.ContainerRuntime) http.Handler {
 		files.ServeHTTP(w, r)
 	})
 	return security(sameOrigin(mux))
+}
+
+func WithBasicAuth(next http.Handler, username, password string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providedUser, providedPassword, ok := r.BasicAuth()
+		userOK := subtle.ConstantTimeCompare([]byte(providedUser), []byte(username)) == 1
+		passwordOK := subtle.ConstantTimeCompare([]byte(providedPassword), []byte(password)) == 1
+		if !ok || !userOK || !passwordOK {
+			w.Header().Set("WWW-Authenticate", `Basic realm="LightNode Controller", charset="UTF-8"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

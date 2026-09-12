@@ -11,7 +11,7 @@ restart, host reboot, or a Tokyo node change.
 | Physical interface | `eth0`, private address `10.2.0.12` |
 | TUN and DNS | `lightnode-tun`, DNS `172.19.0.2` |
 | Tokyo endpoint and exit | `149.104.78.121:443`, exit `149.104.78.121` |
-| Dashboard | `127.0.0.1:9180`, SSH tunnel only |
+| Dashboard | authenticated HTTPS on public TCP 9180 |
 | Selkies | HTTPS TCP 8445, WebRTC UDP/TCP 59000 |
 
 ## Read-only audit
@@ -40,7 +40,7 @@ Acceptance criteria:
 - Output and forward chains are policy drop at priority `filter + 10`.
 - Physical egress allows only the Tokyo endpoint; no public IPv6 fallback.
 - Public ingress contains TCP 8445 and UDP/TCP 59000 and does not contain 8443.
-- Dashboard is loopback-only.
+- Dashboard requires HTTPS and returns `401` without valid Basic Auth.
 - Selkies logs show a successful UDP candidate pair and `ICE completed`.
 - The active client resolution and DPI match the client's reported values.
 - Credentials and node secrets remain mode `0600` and are not printed.
@@ -66,6 +66,8 @@ non-endpoint destination.
 - A missing TUN, broken DNS, or failed Tokyo endpoint must cause loss of browser
   Internet access, never Beijing direct egress.
 - Unexpected sing-box exit is restarted after two seconds.
+- A missing or incomplete Controller nftables table is revalidated and restored
+  by the 10-second host refresh timer.
 - Three consecutive egress failures trigger bounded recovery with a two-minute
   cooldown and at most three attempts.
 - Fault injection requires explicit approval because it interrupts browsing.

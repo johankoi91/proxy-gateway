@@ -46,13 +46,14 @@ func (m Manager) Provision(vpsPath, outputDir string, publicBrowser bool) error 
 	controller := config.DefaultController(vps)
 	m.discoverNetwork(&controller)
 	if publicBrowser {
-		controller.DashboardAddress = "127.0.0.1"
-		controller.PublicInboundTCPPorts = []int{8445, 59000}
+		controller.DashboardAddress = controller.ManagementAddress
+		controller.PublicInboundTCPPorts = []int{8445, 9180, 59000}
 		controller.PublicInboundUDPPorts = []int{59000}
 		controller.ManagementTCPPorts = []int{22}
 		controller.AllowedInboundNote = []string{
 			"host SSH",
 			"public Selkies HTTPS TCP 8445",
+			"public Controller HTTPS TCP 9180",
 			"public Selkies WebRTC UDP/TCP 59000",
 		}
 	}
@@ -230,6 +231,11 @@ func (m Manager) RefreshHostStatus(ctx context.Context, configPath string) error
 	_ = os.Remove(HostRefreshRequestPath)
 	_ = m.EnsureDNS(ctx, configPath)
 	report := m.Doctor(ctx, configPath)
+	if !report.Protected {
+		if err := m.ApplyFirewall(ctx, configPath); err == nil {
+			report = m.Doctor(ctx, configPath)
+		}
+	}
 	data, err := EncodeReport(report)
 	if err != nil {
 		return err

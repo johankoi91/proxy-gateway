@@ -27,10 +27,10 @@ UDP. The active deployment has verified direct WebRTC UDP.
 
 Selkies: `https://154.8.225.152:8445/`
 
-Controller dashboard remains private on `127.0.0.1:9180`:
+Controller dashboard is available through authenticated HTTPS:
 
-```bash
-ssh -L 9181:127.0.0.1:9180 beijing-server
+```text
+https://154.8.225.152:9180/
 ```
 
 ## Security boundary
@@ -38,7 +38,8 @@ ssh -L 9181:127.0.0.1:9180 beijing-server
 - Host `OUTPUT` and Docker `FORWARD` are fail-closed.
 - Physical output allows DHCP, the Tencent private subnet, and only the Tokyo
   endpoint `149.104.78.121:443`.
-- Public container ingress is limited to TCP 8445 and UDP/TCP 59000.
+- Public container ingress is limited to TCP 8445, authenticated Controller
+  HTTPS TCP 9180, and UDP/TCP 59000.
 - DNS uses tunnel address `172.19.0.2`; native IPv6 has no physical fallback.
 - There is no direct, selector, secondary proxy, or alternate browser service.
 

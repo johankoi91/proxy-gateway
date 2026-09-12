@@ -43,9 +43,11 @@ exceptions only. Container Internet traffic remains forced through
 
 ## Verify
 
-The session follows the client's native resolution and DPI. H.264 is fixed at
-30 FPS and 12 Mbps with a maximum QP of 32 to preserve browser text. Chrome
-uses a Simplified Chinese locale and preferred-language list.
+The session is fixed at 2560x1440 and follows the client's DPI. H.264 runs at
+45 FPS with GCC congestion control over a 5-12 Mbps range, initially 10 Mbps.
+Static paint-over restores text quality after motion while scrolling is allowed
+to reduce quality instead of accumulating latency. Chrome uses a Simplified
+Chinese locale and preferred-language list.
 
 ```bash
 docker compose ps

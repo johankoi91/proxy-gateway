@@ -27,8 +27,9 @@ and does not flush Docker tables.
 
 `lightnode-lockdown.service` loads the Kill Switch before Docker. Controller
 runs with host networking, `/dev/net/tun`, `NET_ADMIN`, and `NET_RAW`; it does
-not mount the Docker socket. It supervises sing-box and exposes the React API on
-loopback `127.0.0.1:9180`.
+not mount the Docker socket. It supervises sing-box and exposes the React API as
+authenticated HTTPS on the Beijing management address. Public startup requires
+both Basic Auth credentials and a TLS certificate.
 
 DNS is fixed to `172.19.0.2` and hijacked into Tokyo DoH. If the tunnel fails,
 DNS and Internet access fail closed rather than using Tencent DNS or native

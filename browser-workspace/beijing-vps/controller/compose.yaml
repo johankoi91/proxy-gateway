@@ -8,6 +8,11 @@ services:
     image: lightnode/linux-controller:0.1.0-alpha.3-amd64
     container_name: lightnode-linux-controller
     network_mode: host
+    environment:
+      LIGHTNODE_CONTROLLER_ADMIN_USER: ${CONTROLLER_USER:-}
+      LIGHTNODE_CONTROLLER_ADMIN_PASSWORD: ${CONTROLLER_PASSWORD:-}
+      LIGHTNODE_CONTROLLER_TLS_CERT: ${CONTROLLER_TLS_CERT:-}
+      LIGHTNODE_CONTROLLER_TLS_KEY: ${CONTROLLER_TLS_KEY:-}
     cap_add:
       - NET_ADMIN
       - NET_RAW
