@@ -3,9 +3,9 @@ set -eu
 
 root_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 version="$(tr -d '[:space:]' < "$root_dir/VERSION")"
-image="lightnode/linux-controller:$version"
+image="lightnode/linux-controller:$version-amd64"
 output_dir="$root_dir/dist/offline"
-archive="$output_dir/lightnode-linux-controller-$version-arm64.tar.gz"
+archive="$output_dir/lightnode-linux-controller-$version-amd64.tar.gz"
 
 mkdir -p "$output_dir"
 docker image inspect "$image" >/dev/null

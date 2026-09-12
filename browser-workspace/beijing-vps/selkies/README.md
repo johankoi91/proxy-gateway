@@ -21,7 +21,27 @@ and the public 1:1 NAT address allow direct ICE without a public TURN relay.
 - Selkies release: `v2.0.0rc0`
 - Platform: Linux AMD64
 - The exact upstream manifest is recorded in `UPSTREAM_IMAGE_DIGEST`.
-- The derived image only adds a Chrome autostart desktop entry.
+- The derived image adds the Chrome desktop entry, locale, and sandbox setup.
+
+## Chrome sandbox
+
+The derived image removes the upstream wrapper's forced `--no-sandbox`, fixes
+the sandbox helper ownership and mode, and runs Chrome as UID 1000. Compose
+does not grant `SYS_ADMIN` and does not use privileged mode. It permits Chrome
+namespace creation through Docker's outer seccomp boundary while retaining
+`no-new-privileges`; renderer processes then enter separate user/PID
+namespaces and apply Chrome's own seccomp filter.
+
+Verify the deployed process rather than only inspecting the image:
+
+```bash
+docker exec beijing-selkies-chromium pgrep -af '^/opt/google/chrome/chrome '
+docker exec beijing-selkies-chromium stat -c '%a %U:%G %n' \
+  /opt/google/chrome/chrome-sandbox
+```
+
+The main browser command must not contain `--no-sandbox`, and the helper must
+be `4755 root:root`.
 
 ## Deploy
 
@@ -71,5 +91,5 @@ After a successful deployment:
 Restore on another AMD64 host with:
 
 ```bash
-gzip -dc beijing-selkies-chromium-2.0.0rc0-amd64.tar.gz | docker load
+gzip -dc beijing-selkies-chromium-2.0.1-amd64.tar.gz | docker load
 ```

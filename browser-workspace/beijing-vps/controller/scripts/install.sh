@@ -35,12 +35,17 @@ actual_sing_box="$(sha256sum "$root_dir/vendor/linux-amd64/sing-box" | awk '{pri
 install -d -o root -g root -m 0755 /usr/local/libexec/lightnode-linux-controller
 install -d -o root -g root -m 0700 /etc/lightnode-linux-controller
 install -d -o root -g root -m 0755 /run/lightnode-linux-controller
+install -d -o root -g root -m 0755 /var/lib/lightnode-linux-controller
 install -o root -g root -m 0755 "$root_dir/dist/linux-amd64/lightnode-linux-controller" /usr/local/libexec/lightnode-linux-controller/lightnode-linux-controller
 ln -sfn /usr/local/libexec/lightnode-linux-controller/lightnode-linux-controller /usr/local/bin/lightnode-linux-controller
 install -o root -g root -m 0644 "$root_dir/packaging/lightnode-lockdown.service" /etc/systemd/system/lightnode-lockdown.service
 install -o root -g root -m 0644 "$root_dir/packaging/lightnode-container-dns.service" /etc/systemd/system/lightnode-container-dns.service
 install -o root -g root -m 0644 "$root_dir/packaging/lightnode-container-dns.timer" /etc/systemd/system/lightnode-container-dns.timer
 install -o root -g root -m 0644 "$root_dir/packaging/lightnode-container-refresh.path" /etc/systemd/system/lightnode-container-refresh.path
+install -o root -g root -m 0644 "$root_dir/packaging/99-lightnode-tcp-bbr.conf" /etc/sysctl.d/99-lightnode-tcp-bbr.conf
+install -o root -g root -m 0644 "$root_dir/packaging/lightnode-bbr.conf" /etc/modules-load.d/lightnode-bbr.conf
+/usr/sbin/modprobe tcp_bbr
+/usr/sbin/sysctl -p /etc/sysctl.d/99-lightnode-tcp-bbr.conf >/dev/null
 install -d -o root -g root -m 0755 /etc/chrony/conf.d /etc/systemd/system/chrony.service.d
 install -o root -g root -m 0644 "$root_dir/packaging/chrony-lightnode.conf" /etc/chrony/conf.d/lightnode-controller.conf
 install -o root -g root -m 0644 "$root_dir/packaging/chrony-lightnode.service.conf" /etc/systemd/system/chrony.service.d/lightnode-controller.conf

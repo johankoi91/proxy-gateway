@@ -35,8 +35,8 @@ chronyc tracking
 Acceptance criteria:
 
 - Controller and Selkies are running and healthy.
-- All nine Controller checks are healthy; `protected=true`, `connected=true`.
-- Host and Selkies container observe `149.104.78.121`.
+- All 12 daily network checks are healthy; `protected=true`, `connected=true`.
+- Host and Docker business traffic both observe `149.104.78.121`.
 - Output and forward chains are policy drop at priority `filter + 10`.
 - Physical egress allows only the Tokyo endpoint; no public IPv6 fallback.
 - Public ingress contains TCP 8445 and UDP/TCP 59000 and does not contain 8443.
@@ -71,6 +71,11 @@ non-endpoint destination.
 - Three consecutive egress failures trigger bounded recovery with a two-minute
   cooldown and at most three attempts.
 - Fault injection requires explicit approval because it interrupts browsing.
+
+The Controller dashboard deliberately limits its daily green/red state to the
+12 network ownership checks. Selkies media quality, Controller certificate
+governance, file hashes, log rotation and resource capacity remain part of this
+strict audit document and do not change the network health headline.
 
 ## Report
 

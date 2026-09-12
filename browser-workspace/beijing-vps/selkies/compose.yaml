@@ -1,7 +1,7 @@
 services:
   desktop:
     build: .
-    image: lightnode/selkies-chromium:2.0.0rc0-amd64
+    image: lightnode/selkies-chromium:2.0.1-amd64
     container_name: beijing-selkies-chromium
     hostname: beijing-selkies-chromium
     environment:
@@ -42,6 +42,11 @@ services:
     volumes:
       - selkies-home:/home/ubuntu
     shm_size: 2gb
+    security_opt:
+      # Chrome creates its own user/PID/seccomp sandbox. Docker's default
+      # seccomp profile blocks the namespace setup it needs.
+      - seccomp=unconfined
+      - no-new-privileges:true
     restart: unless-stopped
     logging:
       driver: json-file

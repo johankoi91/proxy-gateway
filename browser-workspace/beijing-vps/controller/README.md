@@ -28,6 +28,10 @@ Installation discovers the physical interface, generates strict configuration,
 loads the boot Kill Switch, starts the container, applies tunnel DNS, and
 requires a healthy Tokyo egress before succeeding.
 
+The host loads TCP BBR and uses `fq` as the default queue discipline for new
+interfaces. New VLESS TCP sockets therefore use BBR for the Beijing-Tokyo path;
+this improves recovery from loss but does not replace route-quality monitoring.
+
 ## Operations
 
 ```bash
@@ -58,6 +62,14 @@ persistent file and reloads it before publishing the refreshed status.
 ```
 
 Node credentials are mode `0600` and diagnostics do not print them.
+
+Beginner-oriented design and operations guide, with a Linux networking study
+path covering namespaces, veth/bridge, netfilter hooks, nftables, policy
+routing, marks, TUN, conntrack, NAT, DNS, packet capture, and safe labs:
+
+```text
+docs/controller-design-and-operations-guide.md
+```
 
 The public dashboard is `https://154.8.225.152:9180/`. Its self-signed
 certificate requires a one-time browser exception. Credentials are stored only

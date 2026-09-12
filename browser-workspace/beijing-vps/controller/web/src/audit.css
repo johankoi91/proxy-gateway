@@ -1,0 +1,45 @@
+.check-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.check-group h3 {
+  margin: 0;
+  padding: 18px 0 10px;
+  color: #536159;
+  font-size: 14px;
+  border-bottom: 1px solid #d7ded9;
+}
+
+.audit-strip {
+  min-height: 84px;
+  margin-top: 22px;
+  padding: 18px 22px;
+  display: grid;
+  grid-template-columns: 1.35fr .7fr .7fr 1.4fr auto;
+  align-items: center;
+  gap: 20px;
+  background: #fff;
+  border: 1px solid #ccd5cf;
+  border-radius: 7px;
+}
+
+.audit-strip > div {
+  display: grid;
+  gap: 5px;
+}
+
+.audit-strip small,
+.audit-strip time {
+  color: #758179;
+  font-size: 12px;
+}
+
+.audit-strip strong {
+  font-size: 15px;
+}
+
+.audit-strip time {
+  text-align: right;
+}

@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-image="lightnode/selkies-chromium:2.0.0rc0-amd64"
+image="lightnode/selkies-chromium:2.0.1-amd64"
 root_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 output_dir="${1:-$root_dir/../dist/offline}"
-archive="${output_dir}/beijing-selkies-chromium-2.0.0rc0-amd64.tar.gz"
+archive="${output_dir}/beijing-selkies-chromium-2.0.1-amd64.tar.gz"
 
 mkdir -p "${output_dir}"
 docker image inspect "${image}" >/dev/null

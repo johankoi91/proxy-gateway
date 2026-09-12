@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"lightnode-linux-controller/internal/config"
+	"lightnode-linux-controller/internal/render"
 )
 
 type fakeRunner struct {
@@ -54,6 +55,21 @@ func TestPriorityRuleCount(t *testing.T) {
 	count, err := priorityRuleCount([]byte(`[{"priority":0},{"priority":1},{"priority":9000},{"priority":1}]`), 1)
 	if err != nil || count != 2 {
 		t.Fatalf("unexpected priority rule count: count=%d err=%v", count, err)
+	}
+}
+
+func TestFirewallPolicyMatchRejectsAdditionalPhysicalAllow(t *testing.T) {
+	vps := config.VPSConfig{Endpoint: config.VPSEndpoint{Address: "149.104.78.121", Port: 443, ExpectedEgress: "149.104.78.121"}}
+	cfg := config.DefaultController(vps)
+	expected := render.Firewall(cfg)
+	actual := []byte(strings.ReplaceAll(string(expected), "priority 10;", "priority filter + 10;"))
+	if !firewallPolicyMatches(actual, expected) {
+		t.Fatal("canonical nftables output did not match rendered policy")
+	}
+	unsafe := []byte(strings.Replace(string(actual), `oifname "lightnode-tun" accept`, `oifname "lightnode-tun" accept
+    oifname "enp0s1" accept`, 1))
+	if firewallPolicyMatches(unsafe, expected) {
+		t.Fatal("additional physical allow rule was accepted")
 	}
 }
 

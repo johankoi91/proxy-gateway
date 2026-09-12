@@ -2,7 +2,12 @@ FROM ghcr.io/selkies-project/selkies/desktop@sha256:c958a33d22074456fd99507d71cb
 
 USER 0
 RUN sed -i 's/^# *\(zh_CN.UTF-8 UTF-8\)/\1/' /etc/locale.gen \
-    && locale-gen
+    && locale-gen \
+    && chown root:root /opt/google/chrome/chrome-sandbox \
+    && chmod 4755 /opt/google/chrome/chrome-sandbox \
+    && sed -i 's/ --no-sandbox --password-store=basic/ --password-store=basic/' \
+        /opt/google/chrome/google-chrome \
+    && ! grep -q -- '--no-sandbox' /opt/google/chrome/google-chrome
 
 COPY chrome-autostart.desktop /etc/xdg/autostart/
 RUN chmod 0644 /etc/xdg/autostart/chrome-autostart.desktop

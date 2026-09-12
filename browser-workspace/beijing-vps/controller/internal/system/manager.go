@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +34,18 @@ type Report struct {
 	ObservedEgress string    `json:"observedEgress,omitempty"`
 	Checks         []Check   `json:"checks"`
 	CheckedAt      time.Time `json:"checkedAt"`
+	LastAudit      *Audit    `json:"lastAudit,omitempty"`
 }
+
+type Audit struct {
+	CheckedAt    time.Time `json:"checkedAt"`
+	Status       string    `json:"status"`
+	Passed       []string  `json:"passed"`
+	Skipped      []string  `json:"skipped"`
+	Remediations []string  `json:"remediations,omitempty"`
+}
+
+const lastAuditPath = "/var/lib/lightnode-linux-controller/last-audit.json"
 
 func New(runner Runner) Manager {
 	return Manager{Runner: runner}
@@ -274,7 +287,7 @@ func (m Manager) validateFirewall(ctx context.Context, path string) error {
 }
 
 func (m Manager) Doctor(ctx context.Context, configPath string) Report {
-	report := Report{CheckedAt: time.Now().UTC()}
+	report := Report{CheckedAt: time.Now().UTC(), LastAudit: readLastAudit(lastAuditPath)}
 	cfg, err := config.ReadController(configPath)
 	if err != nil {
 		report.Checks = append(report.Checks, Check{"config", false, err.Error()})
@@ -285,69 +298,86 @@ func (m Manager) Doctor(ctx context.Context, configPath string) Report {
 		report.Checks = append(report.Checks, Check{ID: id, Healthy: healthy, Detail: detail})
 	}
 
-	physical := interfaceExists(cfg.PhysicalInterface)
-	add("physical_interface", physical, cfg.PhysicalInterface)
+	physical, physicalDetail := interfaceHasAddress(ctx, m.Runner, cfg.PhysicalInterface, cfg.ManagementAddress)
+	add("physical_interface", physical, physicalDetail)
 
 	nftOutput, nftErr := m.Runner.Run(ctx, "/usr/sbin/nft", "list", "table", "inet", "lightnode_controller")
-	protectedFragments := []string{
-		"hook output priority filter + 10", "hook forward priority filter + 10",
-		"policy drop", "ct status dnat accept", cfg.VPSAddress,
-		cfg.TunnelInterface,
-	}
-	for _, port := range append(append([]int(nil), cfg.ManagementTCPPorts...), cfg.PublicInboundTCPPorts...) {
-		if port != 22 {
-			protectedFragments = append(protectedFragments, fmt.Sprintf("tcp dport %d", port))
-		}
-	}
-	for _, port := range cfg.PublicInboundUDPPorts {
-		protectedFragments = append(protectedFragments, fmt.Sprintf("udp dport %d", port))
-	}
-	protected := nftErr == nil && bytesContainAll(nftOutput, protectedFragments...)
+	protected := nftErr == nil && firewallPolicyMatches(nftOutput, render.Firewall(cfg))
 	report.Protected = protected
-	add("kill_switch", protected, compactError(nftErr, "inet lightnode_controller loaded"))
+	add("kill_switch", protected, compactError(nftErr, "active rules exactly match the fail-closed policy"))
+
+	bootOK := commandEquals(ctx, m.Runner, "/usr/bin/systemctl", "active", "is-active", "lightnode-lockdown.service") &&
+		commandEquals(ctx, m.Runner, "/usr/bin/systemctl", "enabled", "is-enabled", "lightnode-lockdown.service") &&
+		commandEquals(ctx, m.Runner, "/usr/bin/systemctl", "active", "is-active", "lightnode-container-dns.timer") &&
+		commandEquals(ctx, m.Runner, "/usr/bin/systemctl", "enabled", "is-enabled", "lightnode-container-dns.timer")
+	add("boot_services", bootOK, "Kill Switch boot service and 10-second host refresh timer")
 
 	serviceOutput, serviceErr := m.Runner.Run(ctx, "/usr/bin/pgrep", "-x", "sing-box")
-	serviceOK := serviceErr == nil && strings.TrimSpace(string(serviceOutput)) != ""
-	add("sing_box_process", serviceOK, compactError(serviceErr, "sing-box is running in the Controller container"))
+	serviceOK := serviceErr == nil && len(strings.Fields(string(serviceOutput))) == 1
+	add("sing_box_process", serviceOK, compactError(serviceErr, "one supervised sing-box process"))
 
-	tunnel := interfaceExists(cfg.TunnelInterface)
-	add("tunnel", tunnel, cfg.TunnelInterface)
+	tunnel, tunnelDetail := interfaceHasAddress(ctx, m.Runner, cfg.TunnelInterface, strings.Split(cfg.TunnelAddress, "/")[0])
+	add("tunnel", tunnel, tunnelDetail)
 
 	ruleOutput, ruleErr := m.Runner.Run(ctx, "/usr/sbin/ip", "-json", "-details", "rule", "show")
 	ruleCount, countErr := priorityRuleCount(ruleOutput, 1)
-	rulesOK := ruleErr == nil && countErr == nil && ruleCount <= 1
-	ruleDetail := fmt.Sprintf("%d active sing-box local rule(s)", ruleCount)
-	if ruleErr != nil {
-		ruleDetail = compactError(ruleErr, ruleDetail)
-	} else if countErr != nil {
-		ruleDetail = countErr.Error()
+	ruleText := string(ruleOutput)
+	rulesOK := ruleErr == nil && countErr == nil && ruleCount == 1 && strings.Contains(ruleText, `"fwmark":"0x2023"`) && strings.Contains(ruleText, `"table":"2022"`)
+	ruleDetail := fmt.Sprintf("%d active sing-box local rule(s); mark 0x2023 -> table 2022", ruleCount)
+	if ruleErr != nil || countErr != nil {
+		ruleDetail = compactError(firstError(ruleErr, countErr), ruleDetail)
 	}
 	add("route_rule_hygiene", rulesOK, ruleDetail)
 
 	dnsOutput, dnsErr := m.Runner.Run(ctx, "/usr/bin/resolvectl", "dns", cfg.PhysicalInterface)
-	dnsOK := dnsErr == nil && strings.Contains(string(dnsOutput), cfg.TunnelDNS)
-	add("dns", dnsOK, compactError(dnsErr, strings.TrimSpace(string(dnsOutput))))
+	dnsConfigured := dnsErr == nil && strings.Contains(string(dnsOutput), cfg.TunnelDNS)
+	dnsCtx, cancelDNS := context.WithTimeout(ctx, 4*time.Second)
+	_, dnsQueryErr := m.Runner.Run(dnsCtx, "/usr/bin/resolvectl", "query", "--cache=no", "example.com")
+	cancelDNS()
+	dnsOK := dnsConfigured && dnsQueryErr == nil
+	dnsDetail := cfg.TunnelDNS + " configured; live query succeeded"
+	if !dnsOK {
+		dnsDetail = compactError(firstError(dnsErr, dnsQueryErr), strings.TrimSpace(string(dnsOutput)))
+	}
+	add("dns", dnsOK, dnsDetail)
 
 	timeOutput, timeErr := m.Runner.Run(ctx, "/usr/bin/chronyc", "tracking")
-	timeOK := timeErr == nil && strings.Contains(string(timeOutput), "Leap status") && strings.Contains(string(timeOutput), "Normal")
-	add("time_sync", timeOK, compactError(timeErr, "chrony synchronized through lightnode-tun"))
+	chronyConfig, chronyErr := os.ReadFile("/etc/chrony/conf.d/lightnode-controller.conf")
+	timeOK := timeErr == nil && chronyErr == nil && strings.Contains(string(timeOutput), "Leap status") && strings.Contains(string(timeOutput), "Normal") && strings.Contains(string(chronyConfig), "bindacqdevice "+cfg.TunnelInterface)
+	add("time_sync", timeOK, compactError(firstError(timeErr, chronyErr), "chrony synchronized and bound to "+cfg.TunnelInterface))
 
-	ipv6Output, _ := m.Runner.Run(ctx, "/usr/sbin/ip", "-6", "route", "show", "default")
-	ipv6Safe := protected || strings.TrimSpace(string(ipv6Output)) == ""
-	add("ipv6_leak", ipv6Safe, "public IPv6 is blocked by the Kill Switch")
+	ipv6Output, ipv6RouteErr := m.Runner.Run(ctx, "/usr/sbin/ip", "-6", "route", "show", "default")
+	ipv6Ctx, cancelIPv6 := context.WithTimeout(ctx, 3*time.Second)
+	_, ipv6ProbeErr := m.Runner.Run(ipv6Ctx, "/usr/bin/curl", "-6", "--fail", "--silent", "--show-error", "--connect-timeout", "1", "--max-time", "2", "https://api64.ipify.org")
+	cancelIPv6()
+	ipv6Safe := ipv6RouteErr == nil && strings.TrimSpace(string(ipv6Output)) == "" && ipv6ProbeErr != nil && protected
+	add("ipv6_leak", ipv6Safe, "no public IPv6 default route; active IPv6 probe blocked")
 
-	if protected && serviceOK && tunnel {
+	endpointStart := time.Now()
+	_, endpointErr := m.Runner.Run(ctx, "/usr/bin/nc", "-4", "-z", "-w", "3", cfg.VPSAddress, strconv.Itoa(cfg.VPSPort))
+	endpointLatency := time.Since(endpointStart).Milliseconds()
+	endpointOK := endpointErr == nil
+	add("tokyo_endpoint", endpointOK, compactError(endpointErr, fmt.Sprintf("%s:%d reachable in %d ms", cfg.VPSAddress, cfg.VPSPort, endpointLatency)))
+
+	egressOK := false
+	if protected && serviceOK && tunnel && dnsOK && endpointOK {
 		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
 		output, probeErr := m.Runner.Run(probeCtx, "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "6", cfg.EgressProbeURL)
+		cancel()
 		observed := strings.TrimSpace(string(output))
 		report.ObservedEgress = observed
-		egressOK := probeErr == nil && observed == cfg.ExpectedEgress
+		egressOK = probeErr == nil && observed == cfg.ExpectedEgress
 		add("tokyo_egress", egressOK, compactError(probeErr, observed))
-		report.Connected = egressOK && dnsOK
 	} else {
-		add("tokyo_egress", false, "not tested until firewall, service and TUN are healthy")
+		add("tokyo_egress", false, "waiting for firewall, service, TUN, DNS and Endpoint")
 	}
+
+	dockerEgressOutput, dockerEgressErr := m.Runner.Run(ctx, "/usr/bin/docker", "exec", "beijing-selkies-chromium", "curl", "-4fsS", "--max-time", "6", cfg.EgressProbeURL)
+	dockerObserved := strings.TrimSpace(string(dockerEgressOutput))
+	dockerEgressOK := dockerEgressErr == nil && dockerObserved == cfg.ExpectedEgress
+	add("docker_egress", dockerEgressOK, compactError(dockerEgressErr, dockerObserved))
+
+	report.Connected = egressOK && dockerEgressOK
 	return report
 }
 
@@ -371,14 +401,77 @@ func interfaceExists(name string) bool {
 	return err == nil
 }
 
-func bytesContainAll(value []byte, fragments ...string) bool {
-	text := string(value)
-	for _, fragment := range fragments {
-		if !strings.Contains(text, fragment) {
-			return false
+func interfaceHasAddress(ctx context.Context, runner Runner, name, address string) (bool, string) {
+	if !interfaceExists(name) {
+		return false, name + " is missing"
+	}
+	output, err := runner.Run(ctx, "/usr/sbin/ip", "-4", "-brief", "address", "show", "dev", name)
+	detail := strings.TrimSpace(string(output))
+	if err != nil {
+		return false, err.Error()
+	}
+	return strings.Contains(detail, address+"/"), detail
+}
+
+func commandEquals(ctx context.Context, runner Runner, name, expected string, args ...string) bool {
+	output, err := runner.Run(ctx, name, args...)
+	return err == nil && strings.TrimSpace(string(output)) == expected
+}
+
+func firewallPolicyMatches(actual, expected []byte) bool {
+	return reflect.DeepEqual(policyChains(actual), policyChains(expected))
+}
+
+func policyChains(value []byte) map[string][]string {
+	result := map[string][]string{"output": {}, "forward": {}}
+	chain := ""
+	for _, raw := range strings.Split(string(value), "\n") {
+		line := strings.TrimSpace(raw)
+		if index := strings.Index(line, "#"); index >= 0 {
+			line = strings.TrimSpace(line[:index])
+		}
+		if strings.HasPrefix(line, "chain ") {
+			fields := strings.Fields(line)
+			chain = ""
+			if len(fields) >= 2 {
+				if _, ok := result[fields[1]]; ok {
+					chain = fields[1]
+				}
+			}
+			continue
+		}
+		if line == "}" {
+			chain = ""
+			continue
+		}
+		if chain == "" || line == "" {
+			continue
+		}
+		line = strings.Replace(line, "priority 10;", "priority filter + 10;", 1)
+		result[chain] = append(result[chain], strings.Join(strings.Fields(line), " "))
+	}
+	return result
+}
+
+func firstError(values ...error) error {
+	for _, value := range values {
+		if value != nil {
+			return value
 		}
 	}
-	return true
+	return nil
+}
+
+func readLastAudit(path string) *Audit {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var audit Audit
+	if json.Unmarshal(data, &audit) != nil || audit.Status == "" || audit.CheckedAt.IsZero() {
+		return nil
+	}
+	return &audit
 }
 
 func priorityRuleCount(value []byte, priority int) (int, error) {

@@ -46,7 +46,7 @@ Controller: lightnode/linux-controller:0.1.0-alpha.3-amd64, healthy
 Selkies: lightnode/selkies-chromium:2.0.0rc0-amd64, healthy
 protected: true
 connected: true
-Controller checks: 9/9 healthy
+Controller daily network checks: 12/12 healthy
 Host egress: 149.104.78.121
 Selkies container egress: 149.104.78.121
 TUN: lightnode-tun / 172.19.0.1/30
@@ -75,7 +75,7 @@ CBR。客户端 DPI 为 192。最近 35 分钟没有 video queue overflow 或 GO
 ## 4. Runtime Integrity
 
 - Controller host 与容器内二进制 SHA-256 一致：
-  `693546cada0fd7c1fd5de4310cf33afc0ee9de8fa71471e3f33c940543afaea9`。
+  `cec9dd9e48fb9abd538f9085ba3b09585cf3bcdf1474c7140bd508091a00b946`。
 - 容器内 sing-box SHA-256：
   `57b3da14e264b6e05e8f46aee027c02d7dd7f1594d19aa39e2f4d2b9459bbd04`。
 - Controller 非 privileged，仅增加 `NET_ADMIN`、`NET_RAW`，root filesystem 只读，
@@ -137,6 +137,14 @@ Container logs: below 1 MiB each at audit time
 - 原实现只检测、不恢复；该 P1 缺口已在本轮修复。
 - 修复版在 7 秒内自动恢复表、默认丢弃策略和精确放行规则。
 - 恢复后 `protected=true`、`connected=true`，出口仍为东京。
+
+### 额外物理放行规则
+
+- 临时加入 `oifname eth0 accept` 后，精确策略检查立即报告 `protected=false`，没有因为
+  必要规则仍存在而误报绿色。
+- 10 秒 host refresh 在 6 秒内重新加载持久化规则并删除危险放行；预设 60 秒安全
+  回滚未触发。
+- 恢复后 12/12 日常网络检查全部正常。
 
 ## 8. Skipped Tests
 

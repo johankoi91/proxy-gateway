@@ -5,7 +5,7 @@ services:
     build:
       context: .
       network: host
-    image: lightnode/linux-controller:0.1.0-alpha.3-amd64
+    image: lightnode/linux-controller:0.1.0-alpha.4-amd64
     container_name: lightnode-linux-controller
     network_mode: host
     environment:
