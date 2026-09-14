@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+profile_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fcitx5"
+profile="$profile_dir/profile"
+
+if [ ! -s "$profile" ]; then
+  install -d -m 0700 "$profile_dir"
+  cat > "$profile" <<'EOF'
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=keyboard-us
+
+[Groups/0/Items/0]
+Name=keyboard-us
+Layout=
+
+[Groups/0/Items/1]
+Name=pinyin
+Layout=
+
+[GroupOrder]
+0=Default
+EOF
+  chmod 0600 "$profile"
+fi
+
+# Keep the remote desktop in plain US keyboard mode. Chinese composition runs
+# in the Selkies client-side assist input and is committed as confirmed text.
+(sleep 2; /usr/bin/fcitx5-remote -s keyboard-us >/dev/null 2>&1 || true) &
+exec /usr/bin/fcitx5 -d --replace

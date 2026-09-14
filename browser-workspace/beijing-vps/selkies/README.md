@@ -43,6 +43,31 @@ docker exec beijing-selkies-chromium stat -c '%a %U:%G %n' \
 The main browser command must not contain `--no-sandbox`, and the helper must
 be `4755 root:root`.
 
+## Chinese input and long prompts
+
+The image includes Fcitx5 as a fallback, but keeps the remote desktop in the US
+keyboard input method. Direct server-side composition is not the default
+because repeated composition updates can turn into backspaces in a remote
+`contenteditable` field.
+
+Use the fixed `文字输入` button in the Selkies client instead. It opens a local
+multiline editor that never emits remote key events while editing. Clicking
+`粘贴到远端` sends the complete UTF-8 text through the multipart clipboard data
+channel, waits for that send to finish, and then issues one remote `Ctrl+V`.
+Press Escape or click `关闭` to leave this mode.
+
+The pinned Selkies core is patched so intermediate `input` events are ignored
+while an IME composition is active. Only `compositionend` commits text. The
+image build requires the patch to match both source and bundled core exactly;
+an upstream layout change fails the build instead of silently restoring the
+destructive preedit/backspace behavior.
+
+For long prompts, compose text on the client computer and paste it through the
+Selkies clipboard channel. Text clipboard payloads are multipart rather than
+keystroke replay, so Unicode text is not subject to keyboard-layout conversion.
+The deployment verification pastes and reads back at least 28 KB of Chinese
+text and requires byte length and SHA-256 to match.
+
 ## Deploy
 
 Create the server-only secret file and keep it mode `0600`:
@@ -91,5 +116,5 @@ After a successful deployment:
 Restore on another AMD64 host with:
 
 ```bash
-gzip -dc beijing-selkies-chromium-2.0.1-amd64.tar.gz | docker load
+gzip -dc beijing-selkies-chromium-2.0.4-amd64.tar.gz | docker load
 ```

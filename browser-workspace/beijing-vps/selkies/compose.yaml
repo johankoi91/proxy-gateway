@@ -1,7 +1,7 @@
 services:
   desktop:
     build: .
-    image: lightnode/selkies-chromium:2.0.1-amd64
+    image: lightnode/selkies-chromium:2.0.4-amd64
     container_name: beijing-selkies-chromium
     hostname: beijing-selkies-chromium
     environment:
@@ -9,6 +9,10 @@ services:
       LANG: zh_CN.UTF-8
       LC_ALL: zh_CN.UTF-8
       LANGUAGE: zh_CN:zh
+      GTK_IM_MODULE: fcitx
+      QT_IM_MODULE: fcitx
+      XMODIFIERS: "@im=fcitx"
+      SDL_IM_MODULE: fcitx
       PASSWD: ${SELKIES_PASSWORD:?SELKIES_PASSWORD is required}
       SELKIES_BASIC_AUTH_USER: ${SELKIES_USER:-admin}
       SELKIES_BASIC_AUTH_PASSWORD: ${SELKIES_PASSWORD:?SELKIES_PASSWORD is required}
@@ -33,6 +37,7 @@ services:
       SELKIES_MANUAL_HEIGHT: "1440"
       SELKIES_USE_CSS_SCALING: "false"
       SELKIES_ENABLE_CLIPBOARD: "true"
+      SELKIES_ENABLE_BINARY_CLIPBOARD: "true"
       SELKIES_FILE_TRANSFERS: upload,download
       SELKIES_UI_TITLE: Beijing Browser (Selkies)
     ports:

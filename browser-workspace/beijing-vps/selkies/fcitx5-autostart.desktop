@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Fcitx 5
+Exec=/usr/local/bin/lightnode-fcitx5-start
+OnlyShowIn=LXQt;
+X-LXQt-Need-Tray=true
