@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Google Chrome
+Exec=/usr/bin/google-chrome-stable --no-first-run --no-default-browser-check --user-data-dir=/home/ubuntu/chrome-cdp-profile --disable-quic --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 --lang=zh-CN --accept-lang=zh-CN,zh,en-US,en --start-maximized
+OnlyShowIn=LXQt;
+X-LXQt-Need-Tray=true

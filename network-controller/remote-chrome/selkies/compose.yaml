@@ -1,7 +1,7 @@
 services:
   desktop:
     build: .
-    image: lightnode/selkies-chromium:2.0.4-amd64
+    image: lightnode/selkies-chromium:2.0.6-amd64
     container_name: beijing-selkies-chromium
     hostname: beijing-selkies-chromium
     environment:
@@ -44,6 +44,8 @@ services:
       - "${SELKIES_BIND_IP:-10.2.0.12}:8445:8445/tcp"
       - "${SELKIES_BIND_IP:-10.2.0.12}:59000:59000/udp"
       - "${SELKIES_BIND_IP:-10.2.0.12}:59000:59000/tcp"
+      - "${SELKIES_BIND_IP:-10.2.0.12}:5190:5190/tcp"
+      - "127.0.0.1:9222:9222/tcp"
     volumes:
       - selkies-home:/home/ubuntu
     shm_size: 2gb
@@ -64,6 +66,66 @@ services:
       timeout: 5s
       retries: 4
       start_period: 45s
+
+  api:
+    build:
+      context: ../claude-browser-api
+    image: lightnode/claude-browser-api:0.2.0
+    container_name: claude-browser-api
+    network_mode: service:desktop
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 9186
+      API_MOCK: ${API_MOCK:-0}
+      API_MAX_PROMPT_CHARS: ${API_MAX_PROMPT_CHARS:-8000}
+      API_CORS_ORIGIN: ${API_CORS_ORIGIN:-http://localhost:5190}
+      CDP_URL: http://127.0.0.1:9222
+      CLAUDE_BROWSER_API_TOKEN: ${CLAUDE_BROWSER_API_TOKEN:?CLAUDE_BROWSER_API_TOKEN is required}
+      API_TLS_CERT: /etc/lightnode-linux-controller/controller.crt
+      API_TLS_KEY: /etc/lightnode-linux-controller/controller.key
+    restart: unless-stopped
+    user: "0:0"
+    read_only: true
+    volumes:
+      - /etc/lightnode-linux-controller:/etc/lightnode-linux-controller:ro
+      - selkies-home:/home/ubuntu
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      desktop:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('https').get({hostname:'127.0.0.1',port:9186,path:'/healthz',rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+
+  web:
+    build:
+      context: ..
+      dockerfile: web/gateway.Dockerfile
+    image: lightnode/claude-browser-web:0.1.0
+    container_name: claude-browser-web
+    network_mode: service:desktop
+    environment:
+      CLAUDE_BROWSER_API_TOKEN: ${CLAUDE_BROWSER_API_TOKEN:?CLAUDE_BROWSER_API_TOKEN is required}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
 
 volumes:
   selkies-home:

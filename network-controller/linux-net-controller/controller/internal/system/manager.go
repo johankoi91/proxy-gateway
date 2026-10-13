@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -60,13 +61,14 @@ func (m Manager) Provision(vpsPath, outputDir string, publicBrowser bool) error 
 	m.discoverNetwork(&controller)
 	if publicBrowser {
 		controller.DashboardAddress = controller.ManagementAddress
-		controller.PublicInboundTCPPorts = []int{8445, 9180, 59000}
+        controller.PublicInboundTCPPorts = []int{8445, 9180, 5190, 59000}
 		controller.PublicInboundUDPPorts = []int{59000}
 		controller.ManagementTCPPorts = []int{22}
 		controller.AllowedInboundNote = []string{
 			"host SSH",
 			"public Selkies HTTPS TCP 8445",
 			"public Controller HTTPS TCP 9180",
+			"public Claude Browser API HTTP/TLS TCP 9186",
 			"public Selkies WebRTC UDP/TCP 59000",
 		}
 	}
@@ -449,6 +451,9 @@ func policyChains(value []byte) map[string][]string {
 		}
 		line = strings.Replace(line, "priority 10;", "priority filter + 10;", 1)
 		result[chain] = append(result[chain], strings.Join(strings.Fields(line), " "))
+	}
+	for name := range result {
+		sort.Strings(result[name])
 	}
 	return result
 }

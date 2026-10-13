@@ -1,6 +1,8 @@
-# Beijing Selkies Browser
+# Beijing Remote Chrome
 
-This is the production remote-browser service on the Beijing VPS.
+This is the production remote-browser service on the Beijing VPS. The React
+client and Go Gateway live in `../web`; the Browser API and Selkies runtime
+are kept beside it so this directory is the single Compose deployment entry.
 
 ```text
 Browser client
@@ -55,6 +57,12 @@ multiline editor that never emits remote key events while editing. Clicking
 `粘贴到远端` sends the complete UTF-8 text through the multipart clipboard data
 channel, waits for that send to finish, and then issues one remote `Ctrl+V`.
 Press Escape or click `关闭` to leave this mode.
+
+When remote text arrives, the client shows `复制到本机`. That action must be
+clicked by the user because browsers only permit system clipboard writes from
+a user gesture. It writes the latest remote text with the Clipboard API and
+falls back to `execCommand("copy")`; it does not rely on an asynchronous
+WebRTC callback being allowed to change the host clipboard.
 
 The pinned Selkies core is patched so intermediate `input` events are ignored
 while an IME composition is active. Only `compositionend` commits text. The
@@ -116,5 +124,5 @@ After a successful deployment:
 Restore on another AMD64 host with:
 
 ```bash
-gzip -dc beijing-selkies-chromium-2.0.4-amd64.tar.gz | docker load
+gzip -dc beijing-selkies-chromium-2.0.6-amd64.tar.gz | docker load
 ```

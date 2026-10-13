@@ -1,0 +1,10 @@
+.DS_Store
+
+# Generated frontend and dependency artifacts
+remote-chrome/web/node_modules/
+remote-chrome/web/dist/
+remote-chrome/web/*.tsbuildinfo
+
+# Local deployment secrets
+remote-chrome/selkies/.env
+remote-chrome/selkies/*.tar.gz

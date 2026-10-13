@@ -13,7 +13,22 @@ Remote client
 Source and operations documentation:
 
 ```text
-beijing-vps/
+remote-chrome/
+```
+
+The remote Claude browser is one delivery unit:
+
+```text
+remote-chrome/web/                 React UI + Go Gateway
+remote-chrome/claude-browser-api/  Playwright/CDP Browser API
+remote-chrome/selkies/             Chrome/Selkies runtime and Compose entrypoint
+```
+
+Build and run it from `remote-chrome/selkies/`:
+
+```bash
+docker compose build
+docker compose up -d
 ```
 
 The local Mac does not run a relay, WireGuard peer, PF forwarding rule,

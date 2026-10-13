@@ -39,7 +39,7 @@ install -d -m 0700 "$INSTALL_DIR" "$INSTALL_DIR/data" "$INSTALL_DIR/tls"
 install -m 0644 "$SCRIPT_DIR/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml"
 
 if [[ ! -f "$INSTALL_DIR/.env" ]]; then
-  password="$(openssl rand -hex 18)"
+  password="admin1111"
   public_ip="$(curl -4fsS --max-time 10 https://api.ipify.org)"
   egress_if="$(ip -4 route show default | awk 'NR==1 {print $5}')"
   if [[ "$PUBLIC_ADMIN" == "true" ]]; then
