@@ -64,7 +64,7 @@ fi
 chmod 0600 /etc/lightnode-linux-controller/controller.key
 chmod 0644 /etc/lightnode-linux-controller/controller.crt
 if [ ! -s "$root_dir/.env" ]; then
-  controller_password="$(/usr/bin/openssl rand -hex 20)"
+  controller_password="admin1111"
   umask 077
   printf '%s\n' \
     'CONTROLLER_USER=admin' \

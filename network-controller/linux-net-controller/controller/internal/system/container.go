@@ -301,11 +301,11 @@ func actionMessage(kind string, finished bool) string {
 	if finished {
 		switch kind {
 		case "pause":
-			return "东京隧道已暂停，Kill Switch 保持生效"
+			return "代理隧道已暂停，Kill Switch 保持生效"
 		case "start":
-			return "东京隧道已启动"
+			return "代理隧道已启动"
 		default:
-			return "东京隧道已重启"
+			return "代理隧道已重启"
 		}
 	}
 	switch kind {

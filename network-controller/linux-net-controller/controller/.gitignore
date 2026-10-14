@@ -1,2 +1,6 @@
-dist/offline/*.tar.gz
-.env
+/dist/
+/web/dist/
+/vendor/linux-amd64/
+/vendor/linux-arm64/
+
+# Keep internal/httpapi/static tracked: Go embeds it for builds.

@@ -39,7 +39,7 @@ sudo ./install.sh
 The installer:
 
 1. Loads the local Docker image tar without contacting a registry.
-2. Creates `/opt/lightnode-vpn-gateway` and a random admin password.
+2. Creates `/opt/lightnode-vpn-gateway` with default credentials `admin` / `admin1111`.
 3. Enables IPv4/IPv6 forwarding.
 4. Opens TCP/UDP 443 when UFW is already active.
 5. Starts the gateway with persistent state under `/opt/lightnode-vpn-gateway/data`.
